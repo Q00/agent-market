@@ -1,0 +1,15 @@
+{
+  "name": "market-detective-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "cloudflared": "0.7.3",
+    "express": "^5.1.0",
+    "zod": "^3.25.0"
+  }
+}

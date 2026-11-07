@@ -1,0 +1,7 @@
+{
+  "harness": "none: fixed rules in rules.py (no LLM)",
+  "seller": {"cmd": "__PY__ seller.py --port {port}"},
+  "market_buyer": {"cmd": "__PY__ market_buyer.py --shops {shops} --item {item} --budget {budget} --order {order}"},
+  "restock": {"cmd": "__PY__ restock.py --state {state}"},
+  "review": {"cmd": "__PY__ review.py --deal {deal}"}
+}

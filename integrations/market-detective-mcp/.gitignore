@@ -1,0 +1,15 @@
+node_modules/
+.env
+*.pem
+*.log
+.mcp_url
+# 실명·원본 데이터와 사건 기록은 저장소에 올리지 않습니다.
+data/
+# 시장 실행기: 키트, 에이전트 개인키, 토큰, 로그, 방침과 차단 목록
+runner/
+*.key
+*.pid
+join.log
+policy.json
+.market/
+logs/

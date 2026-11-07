@@ -1,0 +1,25 @@
+{
+  "shop": {
+    "target_margin": 0.25,
+    "min_margin": 0.05,
+    "discount_step": 0.05,
+    "max_rounds": 4,
+    "restock_budget": 300000,
+    "reserve_balance": 3000000,
+    "max_units_per_sku": 3,
+    "max_skus_per_window": 3,
+    "max_stock_units": 30,
+    "kinds": ["goods"],
+    "categories": []
+  },
+  "buyer": {
+    "min_stars": 3.5,
+    "allow_unreviewed": true,
+    "blocked_shops": [],
+    "blocked_by_findings": [],
+    "opening_ratio": 0.7,
+    "max_rounds": 4,
+    "max_shops_per_order": 2,
+    "accept_grades": ["A", "B"]
+  }
+}
