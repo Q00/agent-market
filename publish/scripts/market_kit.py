@@ -78,7 +78,6 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 KIT_VERSION = "5"
-CHAIN_ROUND = 4                                     # deals are paid on Maroo testnet from this round
 BUYER_TIMEOUT = 300
 ECON_ROUND = 3
 FOOD_GRADE_CUTS = (0.8, 0.45)                        # share of shelf life left for food grade A, B (the market's)
@@ -520,18 +519,31 @@ def acp_pay(o, shop_url, shop_pub, receipt, buyer_key, accept=None, why=None):
               "checkout_jwt": s["checkout_jwt"], "checkout_hash": h}
         pm = {"vct": "mandate.payment.1", "order": o["order"], "open_mandate": opens["payment"], "payee": shop_url,
               "amount": co["price"], "currency": "credits", "checkout_hash": h}
-        if o.get("round", 0) >= CHAIN_ROUND:
-            wei = co["price"] * maroo.CREDIT_WEI
+        if o.get("chain"):
+            chain, digest = o["chain"], hashlib.sha256(s["checkout_jwt"].encode()).digest()
+            fee = maroo.fees(co["price"], chain["market_fee_bps"], chain["network_fee_credits"])
+            if co["price"] < fee["shop"]:
+                reason = f"the price {co['price']} does not cover the shop's fees of {fee['shop']}"
+                log(f"[maroo] not paying: {reason}")
+                why.append(reason)
+                with contextlib.suppress(httpx.HTTPError):
+                    c.post(f"{base}/checkout_sessions/{s['id']}/cancel", json={})
+                return None
+            wei = (co["price"] - fee["shop"]) * chain["credit_wei"]
+            fee_wei = fee["market"] * chain["credit_wei"]
             have = maroo.balance(buyer_key.address)
-            if have < wei + maroo.GAS_RESERVE:
+            if have < wei + fee_wei + maroo.GAS_RESERVE:
                 reason = f"wallet {buyer_key.address} is short of tOKRW; claim some at {maroo.FAUCET}"
                 log(f"[maroo] not paying: {reason}")
                 why.append(reason)
                 with contextlib.suppress(httpx.HTTPError):
                     c.post(f"{base}/checkout_sessions/{s['id']}/cancel", json={})
                 return None
-            pm["tx_hash"] = maroo.pay(buyer_key, shop_pub, wei, hashlib.sha256(s["checkout_jwt"].encode()).digest())
-            log(f"[maroo] paid {wei / 10 ** 18:g} tOKRW: {maroo.tx_url(pm['tx_hash'])}")
+            pm["tx_hash"] = maroo.pay(buyer_key, shop_pub, wei, digest)
+            log(f"[maroo] paid the shop {wei / 10 ** 18:g} tOKRW: {maroo.tx_url(pm['tx_hash'])}")
+            if fee_wei:
+                pm["fee_tx_hash"] = maroo.pay(buyer_key, chain["market_address"], fee_wei, digest)
+                log(f"[maroo] paid the market fee {fee_wei / 10 ** 18:g} tOKRW: {maroo.tx_url(pm['fee_tx_hash'])}")
         sign = lambda m: {"mandate": m, "sig": base64.b64encode(buyer_key.sign(canon(m))).decode()}
         payment = {"payment_data": {"order": o["order"], "checkout_mandate": sign(cm), "payment_mandate": sign(pm)}}
         r = c.post(f"{base}/checkout_sessions/{s['id']}/complete", json=payment)

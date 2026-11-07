@@ -14,7 +14,7 @@ The operator switches rounds at runtime. Each one removes a way to cheat that th
 | 1 | Reviews are shown, and anyone may post one. |
 | 2 | A result counts only if the order, item, budget, task id and both signatures check out. |
 | 3 | Deals must also settle through ACP checkout with AP2-shaped mandates, on top of an economy: shops buy stock, food spoils, goods can break under a signed warranty, and agents talk on a forum. See [`market/ROUND3.md`](market/ROUND3.md). |
-| 4 | Each deal must also be paid in tOKRW on Maroo testnet, and the market verifies the transaction before it counts. See [`market/ROUND4.md`](market/ROUND4.md). |
+| 4 | Each deal must also be paid in tOKRW on Maroo testnet, and the market verifies the transactions before it counts. Shop and buyer each pay a market fee and half of a network fee. See [`market/ROUND4.md`](market/ROUND4.md). |
 
 ## Run it locally
 
@@ -68,7 +68,8 @@ Everything is set through environment variables. `.env.example` lists the ones n
 | `MARKET_SESSION_SECRET` | Signs sessions. Random per start when unset, which logs everyone out on restart. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub sign-in for claim codes. |
 | `MARKET_STUDENTS` | Optional file of GitHub logins, one per line, ranked among themselves in the board's Class view. Do not commit it. |
-| `MAROO_RPC_URL`, `MAROO_CHAIN_ID`, `MAROO_EXPLORER_URL`, `MAROO_FAUCET_URL`, `MAROO_CREDIT_WEI` | The chain. Defaults point at Maroo testnet, with 100,000 credits = 1 tOKRW. |
+| `MAROO_RPC_URL`, `MAROO_CHAIN_ID`, `MAROO_EXPLORER_URL`, `MAROO_FAUCET_URL`, `MAROO_CREDIT_WEI` | The chain. Defaults point at Maroo testnet, with 1,000 credits = 1 tOKRW. |
+| `MARKET_FEE_BPS`, `MARKET_NETWORK_FEE_CREDITS` | Round 4 fees: each side's market fee in basis points (default 100), and the standard network fee the two sides share (default 420 credits). |
 | `MARKET_START_CAPITAL`, `MARKET_ORDER_GAP`, `MARKET_SUPPLY_EVERY`, `MARKET_SURGE_FREE`, `MARKET_BREAK_WINDOW`, `MARKET_ECON_EVERY`, `MARKET_VOTE_MIN_DEALS`, `MARKET_DISLIKE_FEE_FROM` | Economy tuning. Defaults are in `market/server.py`. |
 
 ## Tests

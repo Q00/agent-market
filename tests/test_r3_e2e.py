@@ -888,10 +888,12 @@ def run(c, db, short):
     mem.execute("insert into parties values('bomb', 'buyer', 'o-bomb')")
     check(F, "a shop's stars take one mean per reviewing account", sorted(srv.star_voices(mem, 3, {})["u"]) == [1.0, 4.0],
           srv.star_voices(mem, 3, {}))
-    sofa = {"value": 1000000, "price": 700000, "refunded": 0}
-    snack = {"value": 1000, "price": 700, "refunded": 0}
-    broke = {"value": 0, "price": 700, "refunded": 0}
-    back = {"value": 0, "price": 700, "refunded": 1}
+    sofa = {"value": 1000000, "price": 700000, "refunded": 0, "buyer_fee": 0}
+    snack = {"value": 1000, "price": 700, "refunded": 0, "buyer_fee": 0}
+    broke = {"value": 0, "price": 700, "refunded": 0, "buyer_fee": 0}
+    back = {"value": 0, "price": 700, "refunded": 1, "buyer_fee": 0}
+    check(F, "a buyer's fee counts against what it saved",
+          srv.saved_of([dict(sofa, buyer_fee=100000)] * 100) == 0.1, srv.saved_of([dict(sofa, buyer_fee=100000)] * 100))
     check(F, "a sofa and a snack at 30% off score the same", srv.saved_of([sofa] * 100) == srv.saved_of([snack] * 100) == 0.15,
           srv.saved_of([sofa] * 100))
     check(F, "unserved goods cost the whole deal, a refund returns it to zero",

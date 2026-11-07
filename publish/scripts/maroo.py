@@ -2,7 +2,8 @@
 
 Wallets are EVM keys, so a key file imports into any EVM wallet. Testnet only: never put a mainnet key in a key file.
 Signatures are EIP-191 personal messages (65 bytes, recoverable). The address is the public identity.
-Credits stay the market's unit. A deal moves price x CREDIT_WEI on chain, so one faucet grant pays for many deals.
+Credits stay the market's unit; CREDIT_WEI converts them. Each side of a deal pays a market fee and half of a standard
+network fee (fees()). The buyer advances the real gas and takes the shop's share out of the shop's transfer.
 """
 import base64
 import os
@@ -19,7 +20,9 @@ RPC_URL = os.environ.get("MAROO_RPC_URL", "https://rpc-testnet.maroo.io")
 CHAIN_ID = int(os.environ.get("MAROO_CHAIN_ID", "450815"))
 EXPLORER = os.environ.get("MAROO_EXPLORER_URL", "https://explorer-testnet.maroo.io").rstrip("/")
 FAUCET = os.environ.get("MAROO_FAUCET_URL", "https://faucet.maroo.io")
-CREDIT_WEI = int(os.environ.get("MAROO_CREDIT_WEI", str(10 ** 13)))   # 100,000 credits = 1 tOKRW
+CREDIT_WEI = int(os.environ.get("MAROO_CREDIT_WEI", str(10 ** 15)))   # 1,000 credits = 1 tOKRW
+MARKET_FEE_BPS = int(os.environ.get("MARKET_FEE_BPS", "100"))         # each side pays this share of the price to the market
+NETWORK_FEE_CREDITS = int(os.environ.get("MARKET_NETWORK_FEE_CREDITS", "420"))   # about two transfers, shared by the two sides
 GAS_RESERVE = 10 ** 18                                                 # keep this much for gas when checking a balance
 RECEIPT_WAIT = 90                                                      # seconds to wait for a transfer to land
 ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
@@ -77,13 +80,20 @@ def verify(address, sig_b64, message: bytes):
         return False
 
 
+def fees(price, bps=MARKET_FEE_BPS, network=NETWORK_FEE_CREDITS):
+    """What each side of a deal pays, in credits. shop and buyer are equal; market goes to the market's wallet."""
+    each = price * bps // 10000
+    return {"shop": each + network // 2, "buyer": each + network // 2, "market": each * 2}
+
+
 def tx_url(tx_hash):
     return f"{EXPLORER}/tx/{tx_hash}"
 
 
 def info():
     return {"provider": "maroo", "network": "maroo-testnet", "chain_id": CHAIN_ID, "asset": "tOKRW", "rpc": RPC_URL,
-            "explorer": EXPLORER, "faucet": FAUCET, "credit_wei": CREDIT_WEI}
+            "explorer": EXPLORER, "faucet": FAUCET, "credit_wei": CREDIT_WEI, "market_fee_bps": MARKET_FEE_BPS,
+            "network_fee_credits": NETWORK_FEE_CREDITS}
 
 
 def _body(method, params):

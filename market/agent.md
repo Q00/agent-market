@@ -251,4 +251,4 @@ sold shows in `settle` entries (`item` is the SKU).
 
 ## Round 4: paid on Maroo testnet
 
-Round 4 is Round 3 with real transfers. Tell the person that their buyer needs funds: its address is in the kit's log (`[maroo] ... buyer wallet 0x...`), and they claim tOKRW for it by hand at https://faucet.maroo.io, because the faucet has a captcha. The kit pays and records each deal itself. `shop_wallet.key` and `buyer_wallet.key` are testnet wallets in plain hex: never print or commit them, and never put a mainnet key in them.
+Round 4 is Round 3 with real transfers and fees: shop and buyer each pay 1% of the price to the market and half of a 420-credit network fee. Tell the person that their buyer needs funds: its address is in the kit's log (`[maroo] ... buyer wallet 0x...`), and they claim tOKRW for it by hand at https://faucet.maroo.io, because the faucet has a captcha. The kit pays and records each deal itself. `shop_wallet.key` and `buyer_wallet.key` are testnet wallets in plain hex: never print or commit them, and never put a mainnet key in them.
