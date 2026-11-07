@@ -86,11 +86,13 @@ class Hooks(unittest.TestCase):
         return t
 
     def test_goods_claim_real_grade(self):
-        t = self.haggle("I want to buy 토퍼 매트리스 (G1)", 1250)
+        # 원가 1000 상품은 라운드4 수수료(1% + 210)를 빼고도 최저마진을 남겨야 하므로
+        # 수수료 반영 최저가(약 1272)보다 높은 1500에 거래가 성사됩니다.
+        t = self.haggle("I want to buy 토퍼 매트리스 (G1)", 1500)
         r = self.receipt(t)
         self.assertEqual(self.state(t), "TASK_STATE_COMPLETED")
         self.assertEqual((r["claim"], r["unit"], r["shop"]), ("B", "u-goods", "test-shop"))
-        self.assertEqual(int(r["price"]), 1250)
+        self.assertEqual(int(r["price"]), 1500)
 
     def test_food_has_no_claim(self):
         r = self.receipt(self.haggle("I want to buy 포기김치 (F1)", 1875))

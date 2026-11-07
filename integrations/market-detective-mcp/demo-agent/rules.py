@@ -4,6 +4,7 @@
 """
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -51,17 +52,63 @@ def parse_ask(text):
     return found[-1] if found else None
 
 
+# --- 수수료: 라운드4에서 시장이 양측에 부과합니다. maroo.py 기본값(MARKET_FEE_BPS=100,
+# MARKET_NETWORK_FEE_CREDITS=420)과 동일하게 맞춥니다. 거래마다 각 측이 가격의 1%(시장)와
+# 네트워크 수수료의 절반(210)을 부담합니다. (market/ROUND4.md)
+MARKET_FEE_BPS = int(os.environ.get("MARKET_FEE_BPS", "100"))
+NETWORK_FEE_CREDITS = int(os.environ.get("MARKET_NETWORK_FEE_CREDITS", "420"))
+HALF_NETWORK_FEE = NETWORK_FEE_CREDITS // 2
+
+
+def market_fee(price):
+    return int(price) * MARKET_FEE_BPS // 10000
+
+
+def shop_net(price):
+    """샵이 실제로 받는 금액: P - 시장수수료(1%) - 210 (ROUND4)."""
+    return int(price) - market_fee(price) - HALF_NETWORK_FEE
+
+
+def buyer_fee(price):
+    """바이어가 가격에 더해 부담하는 비용: 시장수수료(1%) + 210."""
+    return market_fee(price) + HALF_NETWORK_FEE
+
+
+def price_for_net(target_net):
+    """샵 실수령액이 target_net 이상이 되는 최소 정수 가격. price_covers_fees도 자동 충족."""
+    target_net = max(0, int(math.ceil(target_net)))
+    rate = 1 - MARKET_FEE_BPS / 10000
+    p = max(1, int(math.ceil((target_net + HALF_NETWORK_FEE) / rate)))
+    while p > 1 and shop_net(p - 1) >= target_net:
+        p -= 1
+    while shop_net(p) < target_net:
+        p += 1
+    return p
+
+
+def buyer_price_cap(budget):
+    """가격 + 바이어 수수료가 예산을 넘지 않는 최대 정수 가격."""
+    budget = int(budget)
+    rate = 1 + MARKET_FEE_BPS / 10000
+    p = max(0, int((budget - HALF_NETWORK_FEE) / rate))
+    while p + 1 + buyer_fee(p + 1) <= budget:
+        p += 1
+    while p > 0 and p + buyer_fee(p) > budget:
+        p -= 1
+    return p
+
+
 # --- 판매자
 
 def floor_price(cost, policy):
-    """원가 미만으로 내려가지 않는 최저가."""
-    return int(math.ceil(cost * (1 + max(0.0, policy["min_margin"]))))
+    """수수료를 빼고도 원가+최저마진을 남기는 최저가. price_covers_fees도 충족합니다."""
+    return price_for_net(cost * (1 + max(0.0, policy["min_margin"])))
 
 
 def seller_ask(cost, list_price, rounds, policy):
     """라운드가 지날수록 내려가되 최저가 아래로는 내려가지 않는 제시가."""
     floor = floor_price(cost, policy)
-    start = int(math.ceil(cost * (1 + policy["target_margin"])))
+    start = price_for_net(cost * (1 + policy["target_margin"]))
     if list_price and list_price >= floor:
         start = min(start, int(list_price))
     return max(floor, int(start * (1 - policy["discount_step"]) ** max(0, rounds)))
@@ -121,10 +168,11 @@ def select_shops(shops, acceptable, policy):
 
 
 def buyer_offer(budget, ask, rounds, policy):
-    """이번 라운드 제안가. 예산을 넘지 않습니다. 제시가가 계획 이하면 제시가를 받아들입니다."""
+    """이번 라운드 제안가. 가격+수수료가 예산을 넘지 않습니다. 제시가가 계획 이하면 받아들입니다."""
+    cap = buyer_price_cap(budget)
     limit = max(1, policy["max_rounds"] - 1)
     ratio = policy["opening_ratio"] + (1 - policy["opening_ratio"]) * min(rounds, limit) / limit
-    planned = min(int(budget), int(budget * ratio))
+    planned = min(cap, int(cap * ratio))
     if ask is not None and 0 < ask <= planned:
         return ask
     return planned
@@ -137,7 +185,7 @@ def valid_receipt(receipt, budget, highest_offer, item, acceptable):
     price = receipt.get("price")
     if isinstance(price, float) and price.is_integer():
         price = int(price)
-    if type(price) is not int or price <= 0 or price > budget or price > highest_offer:
+    if type(price) is not int or price <= 0 or price + buyer_fee(price) > budget or price > highest_offer:
         return False
     return receipt.get("item") == item or receipt.get("item") in (acceptable or [])
 

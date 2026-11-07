@@ -12,6 +12,7 @@ const findings = join(base, "findings.jsonl");
 process.env.MARKET_RUNNER_DIR = join(base, "runner");
 process.env.MARKET_RUNNER_ENV = envFile;
 process.env.MARKET_RUNNER_FINDINGS = findings;
+process.env.MARKET_BASE = "https://hack.ourolabs.ai";
 const { agentStatus, joinMarket, leaveMarket, setAgentPolicy, syncFindings } = await import("./lib/join-runner.js");
 const SECRET = "mk-TESTSECRET123";
 const store = {
@@ -21,16 +22,15 @@ const store = {
 };
 
 function fakeKit() {
-  const kit = join(base, "runner", "agent-market");
+  const kit = join(base, "runner", "kit");
   mkdirSync(join(kit, ".venv", "bin"), { recursive: true });
-  mkdirSync(join(kit, "market-kit"), { recursive: true });
   mkdirSync(join(kit, "bin"), { recursive: true });
   writeFileSync(join(kit, "bin", "cloudflared"), "");
   const python = join(kit, ".venv", "bin", "python");
   // 인자와 환경 변수 이름을 기록하고 대기합니다.
   writeFileSync(python, `#!/bin/sh\necho "[kit] args: $*" >> logs/market-kit.log\necho "[market] joined as ${SECRET}" >> logs/market-kit.log\necho "[seller] untrusted text" >> logs/market-kit.log\nenv | cut -d= -f1 | sort > env-names.txt\nprintf '%s' "$MARKET_OWNER" > owner-seen.txt\nexec -a market_kit.py sleep 30\n`);
   chmodSync(python, 0o755);
-  writeFileSync(join(kit, "market-kit", "market_kit.py"), "");
+  writeFileSync(join(kit, "market_kit.py"), "");
 }
 const agentDir = (role) => join(base, "runner", "agents", role);
 after(() => rmSync(base, { recursive: true, force: true }));
@@ -66,7 +66,7 @@ test("실행, 중복 차단, 비밀 미노출, 종료", async () => {
   const names = readFileSync(join(agentDir("buyer"), "env-names.txt"), "utf8");
   assert.ok(!names.includes("MCP_PATH_TOKEN"));
   const log = readFileSync(join(agentDir("buyer"), "logs", "market-kit.log"), "utf8");
-  assert.match(log, /join --dir .* --market https:\/\/market\.ourolabs\.ai --name tester --buyer-only --orders 3/);
+  assert.match(log, /join --dir .* --market https:\/\/hack\.ourolabs\.ai --name tester --buyer-only --orders 3/);
   assert.ok(!log.includes(`--owner`));
 
   assert.throws(() => joinMarket({ role: "buyer", nickname: "tester", confirmed: true }, store), /이미 실행 중/);

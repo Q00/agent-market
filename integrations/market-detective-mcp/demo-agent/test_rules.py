@@ -40,7 +40,8 @@ class Seller(unittest.TestCase):
         self.assertEqual(rules.seller_move(1000, 1500, floor, SHOP["max_rounds"], SHOP)["action"], "accept")
 
     def test_ask_capped_by_list_when_possible(self):
-        self.assertEqual(rules.seller_ask(1000, 1100, 0, SHOP), 1100)
+        # 정가가 수수료 반영 최저가(약 1272)와 목표가(약 1474) 사이면 정가로 제시합니다.
+        self.assertEqual(rules.seller_ask(1000, 1350, 0, SHOP), 1350)
 
     def test_ask_above_list_when_list_is_below_floor(self):
         self.assertGreaterEqual(rules.seller_ask(1000, 900, 0, SHOP), 1050)
@@ -98,16 +99,19 @@ class Buyer(unittest.TestCase):
     def test_offer_rises(self):
         offers = [rules.buyer_offer(1000, None, r, BUYER) for r in range(4)]
         self.assertEqual(offers, sorted(offers))
-        self.assertEqual(offers[-1], 1000)
+        # 마지막 라운드 제안은 가격+수수료가 예산을 넘지 않는 최대가입니다.
+        self.assertEqual(offers[-1], rules.buyer_price_cap(1000))
 
     def test_receipt_checks(self):
+        # 예산 검사는 가격만이 아니라 가격+바이어 수수료(1%+210)를 기준으로 합니다.
         ok = {"sig_seller": "s", "price": 900, "item": "S"}
-        self.assertTrue(rules.valid_receipt(ok, 1000, 900, "cat", ["S"]))
-        self.assertFalse(rules.valid_receipt(dict(ok, price=950), 1000, 900, "cat", ["S"]))
+        self.assertTrue(rules.valid_receipt(ok, 2000, 900, "cat", ["S"]))
+        self.assertFalse(rules.valid_receipt(dict(ok, price=950), 2000, 900, "cat", ["S"]))   # 제안가 초과
+        self.assertFalse(rules.valid_receipt(dict(ok, price=900), 1000, 900, "cat", ["S"]))   # 가격+수수료>예산
         self.assertFalse(rules.valid_receipt(dict(ok, price=1100), 1000, 2000, "cat", ["S"]))
-        self.assertFalse(rules.valid_receipt(dict(ok, item="Z"), 1000, 900, "cat", ["S"]))
-        self.assertFalse(rules.valid_receipt({"price": 900, "item": "S"}, 1000, 900, "cat", ["S"]))
-        self.assertTrue(rules.valid_receipt(dict(ok, price=900.0), 1000, 900, "cat", ["S"]))
+        self.assertFalse(rules.valid_receipt(dict(ok, item="Z"), 2000, 900, "cat", ["S"]))
+        self.assertFalse(rules.valid_receipt({"price": 900, "item": "S"}, 2000, 900, "cat", ["S"]))
+        self.assertTrue(rules.valid_receipt(dict(ok, price=900.0), 2000, 900, "cat", ["S"]))
 
     def test_accept_terms(self):
         self.assertIsNone(rules.accept_terms({}, BUYER))

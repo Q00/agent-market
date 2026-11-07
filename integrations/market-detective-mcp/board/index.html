@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>수사 상황판</title>
+<title>은팔찌마켓 상황판</title>
 <style>
 :root {
   --bg: #0a0c0f; --panel: #12161b; --line: #262c34; --ink: #f3f1ea; --dim: #8b929b;
@@ -103,6 +103,9 @@ footer { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; display
 .tagline em { font-style: normal; color: var(--mint); }
 .stack { margin-top: clamp(20px, 4vh, 40px); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--dim); font-size: clamp(14px, 1.5vw, 20px); }
 .stack b { color: var(--ink); font-weight: 700; }
+.brand { position: relative; z-index: 2; color: var(--ink); font-size: clamp(16px, 1.8vw, 24px); font-weight: 800; letter-spacing: -.01em; margin-bottom: clamp(14px, 3vh, 28px); }
+.closer { margin-top: clamp(20px, 4vh, 40px); font-size: clamp(20px, 2.8vw, 40px); font-weight: 800; letter-spacing: -.01em; }
+.closer em { font-style: normal; color: var(--red); }
 .badge { display: inline-block; margin-top: 18px; padding: 6px 12px; font-size: clamp(13px, 1.3vw, 17px); font-weight: 700; color: var(--red); border: 2px solid var(--red); border-radius: 6px; }
 .badge.wait { color: var(--dim); border-color: var(--line); font-weight: 400; }
 
@@ -122,6 +125,7 @@ footer { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; display
 <body>
 <section class="scene on" id="s1">
   <div id="stream" aria-hidden="true"></div>
+  <div class="brand">은팔찌마켓</div>
   <div class="hook">에이전트가<br>사기 치면,<br><em>누가 잡나요?</em></div>
   <div class="counters">
     <div class="counter"><b id="cResults">-</b><span>협상 결과 기록</span></div>
@@ -196,14 +200,15 @@ footer { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; display
   <div class="switch"><span class="field">decided_by:</span><span class="flip" id="flip">human</span><span class="road" id="road" hidden>로드맵</span></div>
   <div class="tagline">수사는 곧 에이전트가.<br><em>책임은 기록으로.</em></div>
   <div><span class="badge wait" id="badge">사건 기록 대기</span></div>
-  <div class="stack"><b>공개 API</b> × <b>오픈소스</b> × <b>vooy MCP</b> <span>|</span> 마켓 수사대</div>
+  <div class="stack"><b>공개 API</b> × <b>오픈소스</b> × <b>vooy MCP</b> </div>
+  <div class="closer">은팔찌마켓. <em>사기 치면 다 잡혀갑니다.</em></div>
 </section>
 
 <footer>
   <span id="fMode">연결 중</span>
   <span>테스트 시장 · 상점명 가명 처리 · 세금·보상 미집행 데모</span>
 </footer>
-<div id="help"><span class="mono">1–5</span> 장면 · <span class="mono">[ ]</span> 상점 변경 · <span class="mono">R</span> 리허설 · <span class="mono">H</span> 도움말</div>
+<div id="help"><span class="mono">← →</span> 또는 <span class="mono">1–5</span> 장면 · <span class="mono">[ ]</span> 상점 변경 · <span class="mono">R</span> 리허설 · <span class="mono">H</span> 도움말</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -366,6 +371,10 @@ function rehearse() {
 addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key >= "1" && e.key <= "5") show(Number(e.key));
+  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    show(Math.min(5, Math.max(1, scene + (e.key === "ArrowRight" ? 1 : -1))));
+  }
   else if (e.key === "[" || e.key === "]") {
     if (!ranked.length) return;
     const i = ranked.indexOf(shop);
