@@ -83,6 +83,7 @@ def run(c, chain):
     c.post(f"{BASE}/api/admin/round", headers={"x-admin-token": ADMIN}, json={"round": 4})
     info = c.get(f"{BASE}/api/chain").json()
     check(F, "the market says which chain it pays on", info["chain_id"] == 450815 and info["from_round"] == 4, info["network"])
+    check(F, "the live page is served", c.get(f"{BASE}/live").status_code == 200)
     check(F, "an address that is not a wallet cannot join",
           c.post(f"{BASE}/api/join", json={"name": "x", "role": "buyer", "pubkey": "abc"}).status_code == 400)
 

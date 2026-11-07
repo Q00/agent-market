@@ -2059,6 +2059,7 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/", landing),
         Route("/dashboard", dashboard),
         Route("/board", page("board.html")),
+        Route("/live", page("live.html")),
         Route("/join", page("join.html")),
         Route("/kit.tar.gz", kit),
         Route("/install.sh", install),
