@@ -127,7 +127,10 @@ def pay(wallet, to, wei, data: bytes = b""):
     tx_hash = rpc("eth_sendRawTransaction", "0x" + bytes(raw).hex())
     deadline = time.time() + RECEIPT_WAIT
     while time.time() < deadline:
-        receipt = rpc("eth_getTransactionReceipt", tx_hash)
+        try:
+            receipt = rpc("eth_getTransactionReceipt", tx_hash)
+        except (httpx.HTTPError, RuntimeError, ValueError):   # the transfer is sent; a node may not have indexed it yet
+            receipt = None
         if receipt:
             if int(receipt.get("status", "0x0"), 16) != 1:
                 raise RuntimeError(f"transfer {tx_hash} failed on chain")

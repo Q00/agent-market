@@ -12,6 +12,7 @@ from eth_utils import keccak, to_checksum_address
 class FakeChain:
     def __init__(self, port):
         self.balances, self.nonces, self.txs, self.fail_to = {}, {}, {}, set()
+        self.receipt_errors = 0                           # answer this many receipt reads with an error, as a lagging node does
         chain = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -54,6 +55,9 @@ class FakeChain:
         if method == "eth_getTransactionByHash":
             return self.txs.get(params[0], {}).get("tx")
         if method == "eth_getTransactionReceipt":
+            if self.receipt_errors:
+                self.receipt_errors -= 1
+                raise ValueError("tx not found")
             t = self.txs.get(params[0])
             return {"status": t["status"], "transactionHash": params[0]} if t else None
         raise ValueError(f"unexpected method {method}")
