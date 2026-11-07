@@ -272,8 +272,6 @@ class Market:
         create table if not exists settlements(order_id text primary key, ts real, round int, buyer text,
             shop_url text, item text, price int, task text, checkout_hash text, tx_hash text, fee_tx_hash text,
             shop_fee int default 0, buyer_fee int default 0);
-        create unique index if not exists settlements_tx on settlements(tx_hash) where tx_hash is not null;
-        create unique index if not exists settlements_fee_tx on settlements(fee_tx_hash) where fee_tx_hash is not null;
         create table if not exists units(id text primary key, shop text, sku text, kind text, grade text,
             shelf_hours real, cost int, supplied_at real, expires_at real, defect int, status text,
             order_id text, sold_at real, cert text);
@@ -306,6 +304,8 @@ class Market:
             for col, typ in add.items():
                 if col not in cols:
                     self.db.execute(f"alter table {table} add column {col} {typ}")
+        self.db.execute("create unique index if not exists settlements_tx on settlements(tx_hash) where tx_hash is not null")
+        self.db.execute("create unique index if not exists settlements_fee_tx on settlements(fee_tx_hash) where fee_tx_hash is not null")
         self.db.commit()
         if self.db.execute("select count(*) from shop_urls").fetchone()[0] == 0:   # first start with the table
             self.db.execute("insert or ignore into shop_urls select json_extract(data, '$.url'), json_extract(data, '$.name')"

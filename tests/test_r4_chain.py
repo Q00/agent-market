@@ -55,6 +55,26 @@ def post_settle(shop, buyer, o, jwt, cm, pm, signer=None):
                                      "payment_mandate": sign(pm)})
 
 
+def old_database_upgrades(tmp):
+    """A database from before Round 4 has settlements without the chain columns; the market must still start on it."""
+    path = tmp / "old.db"
+    db = sqlite3.connect(path)
+    db.execute("create table settlements(order_id text primary key, ts real, round int, buyer text, shop_url text,"
+               " item text, price int, task text, checkout_hash text)")
+    db.commit()
+    db.close()
+    code = ("import sys; sys.argv = ['server']; sys.path.insert(0, sys.argv[0] or '.'); "
+            f"sys.path.insert(0, {str(HERE / 'market')!r}); import server; server.Market({str(path)!r})")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    db = sqlite3.connect(path)
+    cols = {x[1] for x in db.execute("pragma table_info(settlements)")}
+    indexes = {x[1] for x in db.execute("pragma index_list(settlements)")}
+    db.close()
+    check(F, "a database from before Round 4 upgrades",
+          r.returncode == 0 and {"tx_hash", "fee_tx_hash", "shop_fee", "buyer_fee"} <= cols
+          and {"settlements_tx", "settlements_fee_tx"} <= indexes, r.stderr[-160:])
+
+
 def run(c, chain):
     shop, other = Agent(c, "s1", "shop"), Agent(c, "s2", "shop")
     buyer, thief = Agent(c, "b1", "buyer"), Agent(c, "b2", "buyer")
@@ -165,6 +185,7 @@ def run(c, chain):
 
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="r4-"))
+    old_database_upgrades(tmp)
     chain = FakeChain(RPC_PORT)
     cards = ThreadingHTTPServer(("127.0.0.1", CARD_PORT), Cards)
     threading.Thread(target=cards.serve_forever, daemon=True).start()
