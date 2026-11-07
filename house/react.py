@@ -4,6 +4,7 @@ The code holds the agent's tools and nothing about what to do with them. There i
 when the model fails, the loop asks again until the deadline.
 
     PROXY_BASE=http://.../v1  PROXY_MODEL=<model>  [PROXY_API_KEY=...]   (any OpenAI-compatible endpoint)
+    PROXY_STRATEGY_MODEL=<model>   optional: a stronger model for runs that plan a business rather than answer a message
 """
 import json
 import os
@@ -33,8 +34,8 @@ Tools:
 """
 
 
-def complete(messages, max_tokens=700, timeout=60):
-    body = {"model": os.environ["PROXY_MODEL"], "messages": messages, "max_tokens": max_tokens}
+def complete(messages, max_tokens=700, timeout=60, model=None):
+    body = {"model": model or os.environ["PROXY_MODEL"], "messages": messages, "max_tokens": max_tokens}
     req = urllib.request.Request(os.environ["PROXY_BASE"].rstrip("/") + "/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"authorization": "Bearer " + os.environ.get("PROXY_API_KEY", ""),
@@ -60,7 +61,7 @@ def log_step(entry):
         f.write(json.dumps(dict(entry, ts=int(time.time())), ensure_ascii=False) + "\n")
 
 
-def run(goal, tools, deadline, finishers, context="", label="run"):
+def run(goal, tools, deadline, finishers, context="", label="run", strategic=False):
     """Run until a tool in finishers answers something other than None. tools: name -> (description, function(args)).
     A finisher that returns None has refused to finish, and what it printed through its observation is the reason.
     Returns the finisher's value, or None when the deadline passes first."""
@@ -73,7 +74,8 @@ def run(goal, tools, deadline, finishers, context="", label="run"):
             messages.append({"role": "user", "content": f"Only {left} seconds are left. Reach your goal now, or finish "
                                                         f"with one of: {', '.join(finishers)}."})
         try:
-            raw = complete(messages, timeout=min(60, max(10, left)))
+            raw = complete(messages, timeout=min(60, max(10, left)),
+                           model=os.environ.get("PROXY_STRATEGY_MODEL") if strategic else None)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError) as e:
             print(f"[react] model call failed: {type(e).__name__}: {e}", flush=True)
             time.sleep(random.uniform(2, 6))             # try again: the agent decides, the code never decides for it
