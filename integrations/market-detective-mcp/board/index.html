@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>은팔찌마켓 상황판</title>
+<style>
+:root {
+  --bg: #0a0c0f; --panel: #12161b; --line: #262c34; --ink: #f3f1ea; --dim: #8b929b;
+  --red: #ff4d3d; --amber: #f5b13d; --mint: #00e5b0;
+  --sans: "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans); overflow: hidden; word-break: keep-all; }
+.scene { position: absolute; inset: 0 0 34px; padding: clamp(16px, 3vw, 44px); opacity: 0; pointer-events: none; transition: opacity .35s; display: flex; flex-direction: column; }
+.scene.on { opacity: 1; pointer-events: auto; }
+.mono { font-family: var(--mono); }
+.dim { color: var(--dim); }
+footer { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 clamp(16px, 3vw, 44px); font-size: 12px; color: var(--dim); border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+#help { position: absolute; right: 16px; bottom: 44px; padding: 8px 12px; font-size: 12px; color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; transition: opacity .3s; z-index: 5; }
+#help.off { opacity: 0; pointer-events: none; }
+
+/* 1. 질문 */
+#s1 { justify-content: center; overflow: hidden; }
+#stream { position: absolute; inset: 0; padding: 12px clamp(16px, 3vw, 44px); font-family: var(--mono); font-size: clamp(11px, 1.1vw, 15px); line-height: 1.75; color: #4b535d; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+#stream div { white-space: nowrap; animation: rise .4s ease-out; }
+#stream .failed { color: #b23a2f; }
+#s1::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at 30% 50%, rgba(10,12,15,.97) 25%, rgba(10,12,15,.55) 75%); }
+.hook { position: relative; z-index: 1; font-size: clamp(38px, 7.2vw, 108px); font-weight: 800; line-height: 1.12; letter-spacing: -.02em; }
+.hook em { font-style: normal; color: var(--red); }
+.counters { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: clamp(20px, 4vw, 60px); margin-top: clamp(20px, 4vh, 44px); }
+.counter b { display: block; font-family: var(--mono); font-size: clamp(20px, 2.8vw, 38px); font-weight: 600; font-variant-numeric: tabular-nums; }
+.counter span { font-size: 13px; color: var(--dim); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+
+/* 2. 이미 일어난 일 */
+#s2 { justify-content: center; }
+.kicker { font-size: clamp(18px, 2.4vw, 32px); font-weight: 700; margin-bottom: clamp(18px, 4vh, 40px); }
+.stamps { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(10px, 2vw, 28px); }
+.round { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: clamp(14px, 2.2vw, 30px); min-height: clamp(190px, 44vh, 400px); display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; }
+.round .r { font-family: var(--mono); font-size: 14px; color: var(--dim); }
+.round .rule { font-size: clamp(13px, 1.3vw, 18px); color: var(--dim); margin-top: 8px; }
+.round .n { font-family: var(--mono); font-size: clamp(14px, 1.4vw, 20px); }
+.stamp { font-size: clamp(24px, 3.6vw, 56px); font-weight: 900; color: var(--red); border: clamp(3px, .4vw, 6px) solid var(--red); border-radius: 8px; padding: .12em .3em; align-self: flex-start; transform: rotate(-5deg) scale(1); margin: 14px 0; white-space: nowrap; }
+.scene.on .stamp { animation: slam .32s cubic-bezier(.2, 1.5, .4, 1) both; }
+.round:nth-child(2) .stamp { animation-delay: .45s !important; }
+.round:nth-child(3) .stamp { animation-delay: .9s !important; }
+@keyframes slam { from { opacity: 0; transform: rotate(-14deg) scale(2.6); } }
+
+/* 3. 사건 */
+.casehead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 10px; }
+.casehead h1 { font-size: clamp(26px, 3.6vw, 52px); font-weight: 800; font-family: var(--mono); letter-spacing: -.02em; }
+.tag { font-size: 13px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+.tag.alert { color: var(--red); border-color: var(--red); }
+.casegrid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: clamp(10px, 2vw, 26px); }
+#graph { width: 100%; height: 100%; min-height: 0; }
+#graph .edge { fill: none; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw .7s ease-out forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+#graph text { font-family: var(--mono); fill: var(--dim); font-size: 13px; }
+.side { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: hidden; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.metric { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: clamp(8px, 1vw, 14px); }
+.metric b { display: block; font-family: var(--mono); font-size: clamp(20px, 2.5vw, 36px); font-variant-numeric: tabular-nums; }
+.metric b.alert { color: var(--red); }
+.metric span { font-size: 13px; color: var(--dim); }
+.law { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--mint); border-radius: 6px; padding: clamp(10px, 1.2vw, 16px); }
+.law h2 { font-size: clamp(15px, 1.5vw, 20px); margin-bottom: 4px; }
+.law p { font-size: 13px; color: var(--dim); line-height: 1.5; }
+.seqs { font-family: var(--mono); font-size: 13px; color: var(--dim); line-height: 1.6; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--dim); }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; }
+
+/* 4. 기록 */
+#s4 { justify-content: center; }
+.record { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(14px, 3vw, 44px); align-items: center; }
+.approved { font-size: clamp(38px, 6.4vw, 96px); font-weight: 900; color: var(--mint); border: clamp(4px, .5vw, 8px) solid var(--mint); border-radius: 10px; padding: .08em .28em; display: inline-block; transform: rotate(-4deg); white-space: nowrap; margin-bottom: clamp(16px, 3vh, 30px); }
+.scene.on .approved { animation: slam .34s cubic-bezier(.2, 1.5, .4, 1) both; }
+.finding { font-size: clamp(16px, 1.9vw, 26px); line-height: 1.45; font-weight: 600; margin-bottom: 14px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; font-size: clamp(12px, 1.05vw, 15px); }
+.kv dt { color: var(--dim); }
+.kv dd { font-family: var(--mono); overflow-wrap: anywhere; }
+.flow { width: 100%; }
+.flow text { fill: var(--ink); font-size: 15px; font-weight: 700; font-family: var(--sans); }
+.flow .sub { fill: var(--dim); font-size: 12px; font-weight: 400; }
+.flow rect { fill: var(--panel); stroke: var(--line); }
+.flow .wire { fill: none; stroke: var(--line); stroke-width: 2; }
+.flow .coin { fill: var(--mint); offset-rotate: 0deg; }
+.scene.on .flow .coin { animation: travel 1.5s ease-in-out infinite; }
+.flow .c2 { animation-delay: .3s !important; }
+@keyframes travel { from { offset-distance: 0%; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } to { offset-distance: 100%; opacity: 0; } }
+.notice { font-size: 13px; color: var(--amber); margin-top: 8px; }
+.ribbon { position: absolute; top: 14px; right: 16px; padding: 4px 10px; font-size: 13px; font-weight: 700; color: #000; background: var(--amber); border-radius: 4px; display: none; }
+.empty { font-size: clamp(22px, 3vw, 40px); font-weight: 700; color: var(--dim); }
+
+/* 5. 비전 */
+#s5 { justify-content: center; }
+.switch { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; font-family: var(--mono); font-size: clamp(18px, 2.6vw, 38px); margin-bottom: clamp(18px, 4vh, 40px); }
+.switch .field { color: var(--dim); }
+.flip { display: inline-block; position: relative; color: var(--mint); font-weight: 700; }
+.road { font-family: var(--sans); font-size: 13px; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 3px 8px; }
+.tagline { font-size: clamp(32px, 5.8vw, 86px); font-weight: 800; line-height: 1.16; letter-spacing: -.02em; }
+.tagline em { font-style: normal; color: var(--mint); }
+.stack { margin-top: clamp(20px, 4vh, 40px); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--dim); font-size: clamp(14px, 1.5vw, 20px); }
+.stack b { color: var(--ink); font-weight: 700; }
+.brand { position: relative; z-index: 2; color: var(--ink); font-size: clamp(16px, 1.8vw, 24px); font-weight: 800; letter-spacing: -.01em; margin-bottom: clamp(14px, 3vh, 28px); }
+.closer { margin-top: clamp(20px, 4vh, 40px); font-size: clamp(20px, 2.8vw, 40px); font-weight: 800; letter-spacing: -.01em; }
+.closer em { font-style: normal; color: var(--red); }
+.badge { display: inline-block; margin-top: 18px; padding: 6px 12px; font-size: clamp(13px, 1.3vw, 17px); font-weight: 700; color: var(--red); border: 2px solid var(--red); border-radius: 6px; }
+.badge.wait { color: var(--dim); border-color: var(--line); font-weight: 400; }
+
+@media (max-width: 760px) {
+  html, body { overflow: auto; }
+  .scene { position: relative; display: none; min-height: calc(100vh - 34px); inset: auto; }
+  .scene.on { display: flex; }
+  footer { position: fixed; }
+  .stamps, .casegrid, .record { grid-template-columns: minmax(0, 1fr); }
+  .round { min-height: 0; }
+  #graph { height: 340px; }
+  footer span:nth-child(n+2) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<section class="scene on" id="s1">
+  <div id="stream" aria-hidden="true"></div>
+  <div class="brand">은팔찌마켓</div>
+  <div class="hook">에이전트가<br>사기 치면,<br><em>누가 잡나요?</em></div>
+  <div class="counters">
+    <div class="counter"><b id="cResults">-</b><span>협상 결과 기록</span></div>
+    <div class="counter"><b id="cAgents">-</b><span>접속 중인 에이전트</span></div>
+    <div class="counter"><b id="cSeq">-</b><span>최신 원장 번호</span></div>
+  </div>
+</section>
+
+<section class="scene" id="s2">
+  <div class="kicker">에이전트끼리 두었더니, 실제로 일어난 일</div>
+  <div class="stamps">
+    <article class="round"><div><div class="r">ROUND 0</div><div class="rule">아무도 영수증을 확인하지 않았다</div></div><div class="stamp">영수증 위조</div><div class="n">2,213 <span class="dim">협상</span></div></article>
+    <article class="round"><div><div class="r">ROUND 1</div><div class="rule">누구나 리뷰를 쓸 수 있었다</div></div><div class="stamp">별점 거래</div><div class="n">2,670 <span class="dim">협상</span></div></article>
+    <article class="round"><div><div class="r">ROUND 2</div><div class="rule">양측 서명이 있어야 인정되었다</div></div><div class="stamp">자전거래</div><div class="n">1,078,288 <span class="dim">협상</span></div></article>
+  </div>
+</section>
+
+<section class="scene" id="s3">
+  <div class="casehead">
+    <h1 id="caseShop">사건 없음</h1>
+    <span class="tag alert" id="caseFailed" hidden></span>
+    <span class="tag" id="caseHouse" hidden>운영 측 에이전트</span>
+    <span class="tag">지표이며 위반 판정이 아닙니다</span>
+  </div>
+  <div class="casegrid">
+    <svg id="graph" viewBox="0 0 640 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="구매자와 상점의 거래 관계망"></svg>
+    <div class="side">
+      <div class="metrics">
+        <div class="metric"><b id="mResults">-</b><span>협상 결과</span></div>
+        <div class="metric"><b id="mFailed">-</b><span>검증 실패 영수증</span></div>
+        <div class="metric"><b id="mShare">-</b><span>최다 구매자 비중</span></div>
+        <div class="metric"><b id="mRepeat">-</b><span>같은 리뷰 반복</span></div>
+      </div>
+      <div class="law"><h2 id="lawTitle">vooy 법령정보로 조문 확인</h2><p id="lawText">메신저에서 조회한 참고 조문입니다. 법률 판단이 아닙니다.</p></div>
+      <div class="seqs" id="seqs"></div>
+      <div class="legend"><span><i style="background:var(--red)"></i>검증 실패</span><span><i style="background:var(--amber)"></i>미정산·이탈</span><span><i style="background:var(--mint)"></i>검증 완료</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="scene" id="s4">
+  <div class="ribbon" id="ribbon">리허설 · 실제 기록 아님</div>
+  <div class="empty" id="emptyRecord">메신저의 승인을 기다리는 중</div>
+  <div class="record" id="recordBox" hidden>
+    <div>
+      <div class="approved" id="approved">승인 · 기록</div>
+      <p class="finding" id="rFinding"></p>
+      <dl class="kv">
+        <dt>대상</dt><dd id="rShop"></dd>
+        <dt>판단 주체</dt><dd id="rBy"></dd>
+        <dt>근거 원장</dt><dd id="rSeqs"></dd>
+        <dt>레시피</dt><dd id="rRecipe"></dd>
+        <dt>기록 해시</dt><dd id="rHash"></dd>
+        <dt>트랜잭션</dt><dd id="rTx"></dd>
+      </dl>
+    </div>
+    <div>
+      <svg class="flow" viewBox="0 0 420 300" role="img" aria-label="거래세가 수사관과 레시피 작성자에게 분배되는 구조">
+        <rect x="130" y="10" width="160" height="62" rx="6"/><text x="210" y="38" text-anchor="middle">거래세 재원</text><text class="sub" x="210" y="58" text-anchor="middle" id="fSource">정산 기준</text>
+        <path class="wire" d="M210 72 C210 150 90 130 90 212"/><path class="wire" d="M210 72 C210 150 330 130 330 212"/>
+        <circle class="coin" r="7" style="offset-path: path('M210 72 C210 150 90 130 90 212')"/>
+        <circle class="coin c2" r="7" style="offset-path: path('M210 72 C210 150 330 130 330 212')"/>
+        <rect x="10" y="212" width="160" height="62" rx="6"/><text x="90" y="240" text-anchor="middle">승인 수사관</text><text class="sub" x="90" y="260" text-anchor="middle" id="fA">금액 미집행</text>
+        <rect x="250" y="212" width="160" height="62" rx="6"/><text x="330" y="240" text-anchor="middle">레시피 작성자</text><text class="sub" x="330" y="260" text-anchor="middle" id="fB">금액 미집행</text>
+      </svg>
+      <p class="notice" id="rNotice"></p>
+    </div>
+  </div>
+</section>
+
+<section class="scene" id="s5">
+  <div class="switch"><span class="field">decided_by:</span><span class="flip" id="flip">human</span><span class="road" id="road" hidden>로드맵</span></div>
+  <div class="tagline">수사는 곧 에이전트가.<br><em>책임은 기록으로.</em></div>
+  <div><span class="badge wait" id="badge">사건 기록 대기</span></div>
+  <div class="stack"><b>공개 API</b> × <b>오픈소스</b> × <b>vooy MCP</b> </div>
+  <div class="closer">은팔찌마켓. <em>사기 치면 다 잡혀갑니다.</em></div>
+</section>
+
+<footer>
+  <span id="fMode">연결 중</span>
+  <span>테스트 시장 · 상점명 가명 처리 · 세금·보상 미집행 데모</span>
+</footer>
+<div id="help"><span class="mono">← →</span> 또는 <span class="mono">1–5</span> 장면 · <span class="mono">[ ]</span> 상점 변경 · <span class="mono">R</span> 리허설 · <span class="mono">H</span> 도움말</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const fmt = (n) => (n == null ? "-" : Number(n).toLocaleString("ko-KR"));
+let scene = 1, shop = params.get("shop"), ranked = [], lastFindingId = null, booted = false, seenSeq = 0, latest = null, flipTimer = null;
+
+function show(n) {
+  scene = n;
+  document.querySelectorAll(".scene").forEach((el, i) => {
+    const on = i === n - 1;
+    el.classList.remove("on");
+    if (on) { void el.offsetWidth; el.classList.add("on"); }
+  });
+  if (n === 3) loadCase();
+  if (n === 5) playFlip();
+}
+
+function line(item) {
+  const who = [item.buyer, item.shop].filter(Boolean).join(" → ") || item.name || "";
+  const tail = item.amount != null ? ` ${fmt(item.amount)}` : "";
+  return `#${item.seq} ${item.kind.toUpperCase()} ${who}${tail} ${item.status ?? ""} ${item.hash ?? ""}`;
+}
+
+function drawStream(feed) {
+  const box = $("stream");
+  for (const item of feed) {
+    if (item.seq <= seenSeq) continue;
+    seenSeq = item.seq;
+    const row = document.createElement("div");
+    row.textContent = line(item);
+    if (item.status === "failed") row.className = "failed";
+    box.append(row);
+  }
+  while (box.children.length > 60) box.firstChild.remove();
+}
+
+function renderRecord(rec, rehearsal) {
+  $("ribbon").style.display = rehearsal ? "block" : "none";
+  $("emptyRecord").hidden = true;
+  $("recordBox").hidden = false;
+  $("rFinding").textContent = rec.finding;
+  $("rShop").textContent = rec.shop;
+  $("rBy").textContent = rec.decided_by === "human" ? "사람 (수사관 승인)" : "에이전트";
+  $("rSeqs").textContent = rec.evidence_seqs.map((s) => `#${s}`).join("  ");
+  $("rRecipe").textContent = rec.recipe_id;
+  $("rHash").textContent = rec.record_hash ?? "-";
+  $("rTx").textContent = rec.tx_hash ?? "온체인 미기록 (시뮬레이션)";
+  const paid = rec.payout && !rec.simulated;
+  $("fA").textContent = paid ? "분배 완료" : "금액 미집행";
+  $("fB").textContent = paid ? "분배 완료" : "금액 미집행";
+  $("rNotice").textContent = paid ? "" : "보상 흐름은 구조를 보여줍니다. 세율과 금액은 아직 집행되지 않았습니다.";
+  const box = $("approved");
+  box.style.animation = "none"; void box.offsetWidth; box.style.animation = "";
+}
+
+function playFlip() {
+  const el = $("flip");
+  clearTimeout(flipTimer);
+  el.textContent = "human";
+  $("road").hidden = true;
+  flipTimer = setTimeout(() => { el.textContent = "agent"; $("road").hidden = false; }, 1400);
+  const has = latest?.findings?.at(-1);
+  $("badge").textContent = has ? `${has.shop} · 수사 기록 있음` : "사건 기록 대기";
+  $("badge").classList.toggle("wait", !has);
+}
+
+function drawGraph(data) {
+  const svg = $("graph");
+  const NS = "http://www.w3.org/2000/svg";
+  svg.replaceChildren();
+  const cx = 320, cy = 280, r = 215, list = data.buyers ?? [];
+  const max = Math.max(1, ...list.map((b) => b.results));
+  const make = (tag, attrs, parent = svg) => {
+    const el = document.createElementNS(NS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    parent.append(el);
+    return el;
+  };
+  list.forEach((b, i) => {
+    const a = (i / Math.max(1, list.length)) * Math.PI * 2 - Math.PI / 2;
+    const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+    const color = b.failed ? "var(--red)" : b.verified ? "var(--mint)" : "var(--amber)";
+    const edge = make("path", { class: "edge", pathLength: 1, d: `M${x} ${y} L${cx} ${cy}`, stroke: color, "stroke-width": 1.5 + (b.results / max) * 8, opacity: b.failed ? 1 : .55 });
+    edge.style.animationDelay = `${i * 45}ms`;
+    make("circle", { cx: x, cy: y, r: 7 + (b.results / max) * 10, fill: "var(--bg)", stroke: color, "stroke-width": 2.5 });
+    const label = make("text", { x, y: y + (Math.sin(a) >= 0 ? 34 : -26), "text-anchor": "middle" });
+    label.textContent = `${b.name.replace("구매자-", "")} ${b.results}`;
+  });
+  make("circle", { cx, cy, r: 46, fill: (data.findings ? "var(--red)" : "var(--panel)"), stroke: data.findings ? "var(--red)" : "var(--ink)", "stroke-width": 3 });
+  const t = make("text", { x: cx, y: cy + 5, "text-anchor": "middle" });
+  t.textContent = (data.shop ?? "").replace("상점-", "");
+  t.style.fill = data.findings ? "#000" : "var(--ink)";
+  t.style.fontWeight = 700;
+  t.style.fontSize = "16px";
+}
+
+async function loadCase() {
+  try {
+    const url = shop ? `/api/case?shop=${encodeURIComponent(shop)}` : "/api/case";
+    const data = await (await fetch(url)).json();
+    ranked = data.ranked?.length ? data.ranked : ranked;
+    if (!data.found) { $("caseShop").textContent = shop ? `${shop} 데이터 없음` : "사건 없음"; return; }
+    shop = data.shop;
+    $("caseShop").textContent = data.shop;
+    const failed = (data.buyers ?? []).reduce((n, b) => n + b.failed, 0);
+    $("caseFailed").hidden = !data.findings;
+    $("caseFailed").textContent = "수사 기록 있음";
+    $("caseHouse").hidden = !data.board?.house;
+    $("mResults").textContent = fmt(data.results);
+    $("mFailed").textContent = fmt(failed);
+    $("mFailed").classList.toggle("alert", failed > 0);
+    $("mShare").textContent = data.top_share == null ? "-" : `${data.top_share}%`;
+    $("mRepeat").textContent = fmt(data.repeated_review);
+    $("mRepeat").classList.toggle("alert", data.repeated_review >= 5);
+    $("seqs").textContent = data.evidence_seqs.length ? `근거 원장  ${data.evidence_seqs.map((s) => `#${s}`).join("  ")}` : `원장 창 #${data.window.from}–#${data.window.to}`;
+    drawGraph(data);
+  } catch { $("caseShop").textContent = "사건 정보를 불러오지 못했습니다"; }
+}
+
+async function tick() {
+  try {
+    const s = await (await fetch("/api/state")).json();
+    latest = s;
+    $("cResults").textContent = fmt(s.totals.results);
+    $("cAgents").textContent = fmt(s.totals.agents_online);
+    $("cSeq").textContent = `#${fmt(s.latest_seq)}`;
+    const mode = s.mode === "live" ? "실시간 원장" : "저장된 원장 재생";
+    const chain = s.chain ? ` · ${s.chain.network}` : "";
+    $("fMode").textContent = `${s.error ? `${s.error} · ` : ""}${mode}${s.round != null ? ` · 라운드 ${s.round}` : ""}${chain}`;
+    drawStream(s.feed);
+    const last = s.findings.at(-1);
+    if (last && last.id !== lastFindingId) {
+      const isNew = booted;
+      lastFindingId = last.id;
+      if (isNew) shop = last.shop;
+      renderRecord(last, false);
+      if (isNew) show(4);
+    }
+    booted = true;
+    if (scene === 3 && shop && last?.shop === shop && $("caseFailed").hidden) loadCase();
+  } catch { $("fMode").textContent = "상황판 서버 연결 끊김"; }
+}
+
+function rehearse() {
+  renderRecord({
+    finding: "리허설 문구: 등급 표기와 실제 등급이 다른 정산 기록이 확인되어, 수사관이 근거와 함께 기록을 승인했습니다.",
+    shop: shop ?? "상점-리허설",
+    decided_by: "human",
+    evidence_seqs: [],
+    recipe_id: "리허설",
+    record_hash: null,
+    tx_hash: null,
+    payout: null,
+    simulated: true,
+  }, true);
+  show(4);
+}
+
+addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key >= "1" && e.key <= "5") show(Number(e.key));
+  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    show(Math.min(5, Math.max(1, scene + (e.key === "ArrowRight" ? 1 : -1))));
+  }
+  else if (e.key === "[" || e.key === "]") {
+    if (!ranked.length) return;
+    const i = ranked.indexOf(shop);
+    shop = ranked[(i + (e.key === "]" ? 1 : ranked.length - 1)) % ranked.length];
+    show(3);
+  } else if (e.key.toLowerCase() === "r") rehearse();
+  else if (e.key.toLowerCase() === "h") $("help").classList.toggle("off");
+});
+
+setTimeout(() => $("help").classList.add("off"), 5000);
+if (params.has("scene")) show(Number(params.get("scene")) || 1);
+tick();
+setInterval(tick, 2000);
+loadCase();
+</script>
+</body>
+</html>
