@@ -1,0 +1,107 @@
+[
+ {
+  "prefix": "",
+  "kind": "goods"
+ },
+ {
+  "prefix": "간편식사>도시락>도시락",
+  "kind": "food",
+  "shelf_hours": 24
+ },
+ {
+  "prefix": "간편식사>김밥>삼각김밥",
+  "kind": "food",
+  "shelf_hours": 24
+ },
+ {
+  "prefix": "간편식사>샌드위치>샌드위치",
+  "kind": "food",
+  "shelf_hours": 24
+ },
+ {
+  "prefix": "신선식품>정육>돼지고기",
+  "kind": "food",
+  "shelf_hours": 24
+ },
+ {
+  "prefix": "신선식품>과일>제철과일",
+  "kind": "food",
+  "shelf_hours": 48
+ },
+ {
+  "prefix": "베이커리>빵>식빵",
+  "kind": "food",
+  "shelf_hours": 48
+ },
+ {
+  "prefix": "유제품>우유>흰우유",
+  "kind": "food",
+  "shelf_hours": 96
+ },
+ {
+  "prefix": "유제품>요거트>요거트",
+  "kind": "food",
+  "shelf_hours": 96
+ },
+ {
+  "prefix": "반찬>김치>포기김치",
+  "kind": "food",
+  "shelf_hours": 168
+ },
+ {
+  "prefix": "가공식품>라면>봉지라면",
+  "kind": "food",
+  "shelf_hours": 720
+ },
+ {
+  "prefix": "가공식품>과자>스낵",
+  "kind": "food",
+  "shelf_hours": 720
+ },
+ {
+  "prefix": "음료>생수>생수",
+  "kind": "food",
+  "shelf_hours": 720
+ },
+ {
+  "prefix": "음료>커피>커피음료",
+  "kind": "food",
+  "shelf_hours": 720
+ },
+ {
+  "prefix": "생활용품>위생>휴지",
+  "kind": "goods"
+ },
+ {
+  "prefix": "생활용품>세제>세탁세제",
+  "kind": "goods"
+ },
+ {
+  "prefix": "문구>필기구>볼펜",
+  "kind": "goods"
+ },
+ {
+  "prefix": "디지털>액세서리>충전케이블",
+  "kind": "goods"
+ },
+ {
+  "prefix": "디지털>음향>이어폰",
+  "kind": "goods"
+ },
+ {
+  "prefix": "가구>침구>이불",
+  "kind": "goods"
+ },
+ {
+  "prefix": "가구>침대>매트리스",
+  "kind": "goods"
+ },
+ {
+  "prefix": "가전>주방>냉장고",
+  "kind": "goods"
+ },
+ {
+  "prefix": "가전>생활>세탁기",
+  "kind": "goods"
+ }
+]

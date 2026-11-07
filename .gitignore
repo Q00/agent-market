@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+.DS_Store
+
+# secrets and agent keys
+.env
+*.env
+!.env.example
+*.pem
+*.key
+.sku_salt
+
+# runtime state
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.out
+.market/
+memory*.json
+
+# local agents from the README
+agent-a/
+agent-b/
+
+# built on deploy
+market/kit.tar.gz
+
+# private per-deployment data
+students.txt

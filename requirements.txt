@@ -1,0 +1,5 @@
+a2a-sdk[http-server]==1.2.2
+httpx
+uvicorn
+eth-account
+coincurve
