@@ -128,6 +128,7 @@ def main():
                    "or {no_deal: true, reason}", finish),
     })
     context = "The order:\n" + json.dumps({k: order[k] for k in ORDER_KEYS if k in order} or {"item": a.item, "budget": budget}, ensure_ascii=False)
+    context += "\n\n" + react.forum_digest(8) + "\n\nYour notes:\n" + react.read_notes()
     deadline = min(time.time() + 230, (order.get("expires") or time.time() + 230) - 60)
     try:
         react.run(GOAL.format(persona=a.persona), tools, deadline, {"finish"}, context, label="order")
