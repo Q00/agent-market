@@ -26,8 +26,9 @@ Rounds (the instructor flips them with POST /api/admin/round):
      ACP checkout, and the shop sends the closed mandates to POST /api/settle. The ledger hides budgets.
      Round 3 is also an economy (ROUND3.md): orders name a catalog category, shops buy stock with their own
      credits, food goes stale, goods can break under a signed warranty, and agents post on a forum.
-  4  as Round 3, and each deal is paid on Maroo testnet: the buyer's wallet sends price x CREDIT_WEI to the shop's
-     wallet with the checkout's hash as data, and names the transaction in its signed payment mandate (ROUND4.md).
+  4  as Round 3, and each deal is paid on Maroo testnet with fees: the buyer's wallet sends the price less the shop's
+     fees to the shop and the market fee to the market, each with the checkout's hash as data, and names both
+     transactions in its signed payment mandate (ROUND4.md).
 
 Signed bytes (canon = JSON with sorted keys, no spaces, UTF-8):
   sig_seller  over canon({shop, item, price, task})
@@ -269,8 +270,10 @@ class Market:
         create index if not exists reviews_round on reviews(round);
         create index if not exists orders_buyer on orders(buyer, issued);
         create table if not exists settlements(order_id text primary key, ts real, round int, buyer text,
-            shop_url text, item text, price int, task text, checkout_hash text, tx_hash text);
+            shop_url text, item text, price int, task text, checkout_hash text, tx_hash text, fee_tx_hash text,
+            shop_fee int default 0, buyer_fee int default 0);
         create unique index if not exists settlements_tx on settlements(tx_hash) where tx_hash is not null;
+        create unique index if not exists settlements_fee_tx on settlements(fee_tx_hash) where fee_tx_hash is not null;
         create table if not exists units(id text primary key, shop text, sku text, kind text, grade text,
             shelf_hours real, cost int, supplied_at real, expires_at real, defect int, status text,
             order_id text, sold_at real, cert text);
@@ -297,7 +300,7 @@ class Market:
                    "settlements": {"unit": "text", "cost": "int", "grade": "text", "expires_at": "real",
                                    "claim": "text", "claim_honest": "int", "warranty_hours": "real",
                                    "value": "int", "use_within": "real", "break_at": "real",
-                                   "broke": "int default 0", "refunded": "int default 0"}}
+                                   "broke": "int default 0", "refunded": "int default 0", "fee_tx_hash": "text", "shop_fee": "int default 0", "buyer_fee": "int default 0", "tx_hash": "text"}}
         for table, add in migrate.items():
             cols = {r["name"] for r in self.db.execute(f"pragma table_info({table})")}
             for col, typ in add.items():
@@ -694,6 +697,9 @@ def order_json(o):
         j["mandates"] = {k: {"mandate": m, "sig": base64.b64encode(M.key.sign(canon(m))).decode()}
                          for k, m in open_mandates(o).items()}
         j["market_pubkey"] = M.pubkey
+    if o["round"] >= CHAIN_ROUND:
+        j["chain"] = {"credit_wei": maroo.CREDIT_WEI, "market_fee_bps": maroo.MARKET_FEE_BPS,
+                      "network_fee_credits": maroo.NETWORK_FEE_CREDITS, "market_address": M.pubkey}
     return j
 
 
@@ -742,12 +748,17 @@ async def settle(req: Request):
     # Round 4: ask the chain first, with no state read before it, so the checks below run with no await between them.
     # Only the buyer's signature gets this far, so nobody else can make the market call the chain.
     on_chain = o["round"] >= CHAIN_ROUND
-    tx_hash, tx_problem = pmm.get("tx_hash"), None
+    tx_hash, fee_tx_hash, tx_problem = pmm.get("tx_hash"), pmm.get("fee_tx_hash"), None
+    fee = maroo.fees(price) if type(price) is int and price >= 0 else {"shop": 0, "buyer": 0, "market": 0}
     if on_chain and buyer and verify(buyer["pubkey"], pm.get("sig") if isinstance(pm, dict) else None, pmm):
         try:
-            tx_problem = await maroo.payment_problem(
-                tx_hash, buyer["pubkey"], p["pubkey"], (price if type(price) is int and price >= 0 else 0) * maroo.CREDIT_WEI,
-                hashlib.sha256(jwt.encode()).digest())
+            digest = hashlib.sha256(jwt.encode()).digest()
+            shop_gets = (price - fee["shop"] if type(price) is int else 0) * maroo.CREDIT_WEI
+            tx_problem = await maroo.payment_problem(tx_hash, buyer["pubkey"], p["pubkey"], shop_gets, digest)
+            if tx_problem is None and fee["market"]:
+                tx_problem = await maroo.payment_problem(fee_tx_hash, buyer["pubkey"], M.pubkey,
+                                                         fee["market"] * maroo.CREDIT_WEI, digest)
+                tx_problem = tx_problem and f"market fee: {tx_problem}"
         except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as e:
             print(f"[settle] chain check failed: {type(e).__name__}: {e}", flush=True)
             return err(503, "the chain did not answer; try again with the same transaction")
@@ -773,8 +784,11 @@ async def settle(req: Request):
         "amount_in_range": type(price) is int and 0 <= price <= o["budget"],
     }
     if on_chain:
+        c["price_covers_fees"] = type(price) is int and price >= fee["shop"]
         c["paid_on_chain"] = tx_problem is None
-        c["transaction_not_used_before"] = M.db.execute("select 1 from settlements where tx_hash=?", (tx_hash if isinstance(tx_hash, str) else "",)).fetchone() is None
+        hashes = [x if isinstance(x, str) else "" for x in (tx_hash, fee_tx_hash)]
+        c["transaction_not_used_before"] = M.db.execute(
+            "select 1 from settlements where tx_hash in (?,?) or fee_tx_hash in (?,?)", hashes + hashes).fetchone() is None
     u = None
     if econ:
         unit_id = co.get("unit") if isinstance(co.get("unit"), str) else ""
@@ -810,7 +824,8 @@ async def settle(req: Request):
                  "break_at": now + random.uniform(0, BREAK_WINDOW) if u["defect"] else None}
         M.db.execute("update units set status='sold', order_id=?, sold_at=? where id=?", (o["id"], now, u["id"]))
         M.wallet(p["name"])
-        M.db.execute("update wallets set balance=balance+? where shop=?", (price, p["name"]))
+        M.db.execute("update wallets set balance=balance+? where shop=?",
+                     (price - fee["shop"] if on_chain else price, p["name"]))
         reveal = {"unit": u["id"], "sku": u["sku"], "name": info.get("name"), "grade": grade,
                   "expires_at": u["expires_at"], "claim": claim, "claim_honest": None if claim is None else claim in (grade, offered),
                   "warranty_hours": warranty}
@@ -818,8 +833,9 @@ async def settle(req: Request):
             "item": co.get("item") if econ else o["item"], "price": price, "task": co["task"], "checkout_hash": chash,
             **extra}
     if on_chain:
-        cols["tx_hash"] = tx_hash
-        reveal = dict(reveal, tx_hash=tx_hash, tx_url=maroo.tx_url(tx_hash))
+        cols.update(tx_hash=tx_hash, fee_tx_hash=fee_tx_hash if fee["market"] else None, shop_fee=fee["shop"], buyer_fee=fee["buyer"])
+        reveal = dict(reveal, tx_hash=tx_hash, tx_url=maroo.tx_url(tx_hash), fee_tx_hash=cols["fee_tx_hash"],
+                      shop_fee=fee["shop"], buyer_fee=fee["buyer"], market_fee=fee["market"])
     M.db.execute(f"insert into settlements({', '.join(cols)}) values({', '.join('?' * len(cols))})", list(cols.values()))
     M.db.commit()
     seq, h = M.append("settle", {"order": o["id"], "buyer": o["buyer"], "shop": norm_url(p["url"]), "item": cols["item"],
@@ -1393,7 +1409,7 @@ def saved_of(mine):
     total = 0.0
     for x in mine:
         value = x["value"] or 0
-        total += max(-1.0, (value - x["price"] + (x["price"] if x["refunded"] else 0)) / (value or max(x["price"], 1)))
+        total += max(-1.0, (value - x["price"] - (x["buyer_fee"] or 0) + (x["price"] if x["refunded"] else 0)) / (value or max(x["price"], 1)))
     return round(total / (len(mine) + SAVED_PRIOR), 4)
 
 
@@ -1829,7 +1845,7 @@ def econ_board(db, rnd, shops, buyers, shop_of, stars_of):
     for b in buyers:
         mine = by_buyer.get(b["name"], [])
         b["deals"] = len(mine)
-        b["surplus"] = sum((x["value"] or 0) - x["price"] + (x["price"] if x["refunded"] else 0) for x in mine)
+        b["surplus"] = sum((x["value"] or 0) - x["price"] - (x["buyer_fee"] or 0) + (x["price"] if x["refunded"] else 0) for x in mine)
         b["saved"] = saved_of(mine)
         b["served"] = sum(1 for x in mine if x["value"])
         b["forum"] = ratings.get(("buyer", b["name"]))

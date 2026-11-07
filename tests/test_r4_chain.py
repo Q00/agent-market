@@ -92,13 +92,22 @@ def run(c, chain):
     o, sku = goods_order()
     unit = stocked(sku)
     price = min(o["budget"], CAT[sku]["list_price"])
-    wei = price * CW
+    fee = maroo.fees(price)
+    wei, fee_wei = (price - fee["shop"]) * CW, fee["market"] * CW
     jwt, digest, cm, pm = mandates(shop, buyer, o, unit, price)
+    market = info["market_address"]
+    check(F, "the order names the fees and the market's wallet",
+          o["chain"]["market_address"] == market and o["chain"]["market_fee_bps"] == maroo.MARKET_FEE_BPS, o["chain"])
+
+    def fee_tx():
+        return maroo.pay(buyer.key, market, fee_wei, digest)
     refused("no transaction", "paid_on_chain", post_settle(shop, buyer, o, jwt, cm, pm), "no transaction hash")
     pm2 = dict(pm, tx_hash="0x" + "ab" * 32)
     refused("a transaction that does not exist", "paid_on_chain", post_settle(shop, buyer, o, jwt, cm, pm2), "not on chain")
     refused("too little", "paid_on_chain",
             post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=maroo.pay(buyer.key, shop.key.address, wei - CW, digest))), "amount")
+    refused("the full price with no shop fee taken", "paid_on_chain",
+            post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=maroo.pay(buyer.key, shop.key.address, price * CW, digest))), "amount")
     refused("paid to another wallet", "paid_on_chain",
             post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=maroo.pay(buyer.key, other.key.address, wei, digest))), "payee")
     refused("paid by another wallet", "paid_on_chain",
@@ -120,12 +129,25 @@ def run(c, chain):
 
     before = chain.balances.get(shop.key.address, 0)
     tx = maroo.pay(buyer.key, shop.key.address, wei, digest)
-    check(F, "the transfer moves price x CREDIT_WEI", chain.balances[shop.key.address] - before == wei)
-    r = post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=tx))
+    check(F, "the shop receives the price less its fees", chain.balances[shop.key.address] - before == wei)
+    refused("no market fee", "paid_on_chain", post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=tx)), "market fee: no transaction hash")
+    refused("a market fee that is too small", "paid_on_chain",
+            post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=tx, fee_tx_hash=maroo.pay(buyer.key, market, fee_wei - CW, digest))), "market fee: the amount")
+    refused("a market fee paid to someone else", "paid_on_chain",
+            post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=tx, fee_tx_hash=maroo.pay(buyer.key, shop.key.address, fee_wei, digest))), "market fee: the payee")
+    market_before = chain.balances.get(market, 0)
+    fee_hash = fee_tx()
+    check(F, "the market's wallet receives both sides' market fees", chain.balances[market] - market_before == fee_wei)
+    cash = shop.inv()["balance"]
+    r = post_settle(shop, buyer, o, jwt, cm, dict(pm, tx_hash=tx, fee_tx_hash=fee_hash))
     j = r.json()
     check(F, "a real payment settles", r.status_code == 200 and j["settled"], r.text[:160])
     mr = j.get("mandate_receipt", {})
-    check(F, "the receipt carries the transaction", mr.get("tx_hash") == tx and tx in mr.get("tx_url", ""), mr.get("tx_url"))
+    check(F, "the receipt carries the transactions and the fees",
+          mr.get("tx_hash") == tx and mr.get("fee_tx_hash") == fee_hash and mr.get("shop_fee") == fee["shop"]
+          and mr.get("buyer_fee") == fee["buyer"] and mr.get("market_fee") == fee["market"], mr.get("tx_url"))
+    check(F, "the shop's balance grows by the price less its fees", shop.inv()["balance"] - cash == price - fee["shop"],
+          (price, fee["shop"]))
     led = c.get(f"{BASE}/api/ledger", params={"limit": 200}).json()
     entries = led["entries"] if isinstance(led, dict) and "entries" in led else led
     check(F, "the public ledger carries the transaction", tx in json.dumps(entries), "")
@@ -135,6 +157,10 @@ def run(c, chain):
     price2 = min(o2["budget"], CAT[sku2]["list_price"])
     jwt2, digest2, cm2, pm2 = mandates(shop, buyer, o2, unit2, price2)
     refused("a transaction already used", "transaction_not_used_before", post_settle(shop, buyer, o2, jwt2, cm2, dict(pm2, tx_hash=tx)))
+    refused("a fee transaction already used", "transaction_not_used_before",
+            post_settle(shop, buyer, o2, jwt2, cm2, dict(pm2, tx_hash=maroo.pay(buyer.key, shop.key.address, (price2 - maroo.fees(price2)["shop"]) * CW, digest2), fee_tx_hash=fee_hash)))
+    jwt3, digest3, cm3, pm3 = mandates(shop, buyer, o2, unit2, 100)
+    refused("a price below the shop's fees", "price_covers_fees", post_settle(shop, buyer, o2, jwt3, cm3, dict(pm3, tx_hash="0x" + "cd" * 32)))
 
 
 def main():
