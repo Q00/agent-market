@@ -93,6 +93,7 @@ REJOIN_SKEW = 600                                    # seconds a signed rejoin s
 
 ECON_ROUND = 3                                       # the round the economy starts in
 CHAIN_ROUND = 4                                      # the round deals start being paid on Maroo testnet
+VOOY = "vooy"                                        # the one public label: /live draws this agent with its mascot
 START_CAPITAL = int(os.environ.get("MARKET_START_CAPITAL", "5000000"))
 POPULARITY_EXP = 0.7                                 # orders per SKU ~ 1/rank^0.7: the top 100 SKUs draw about a quarter
 TASTE_SIZE, TASTE_SHARE = 4, 0.7                     # each buyer's hidden favourite categories, and the share of its orders
@@ -1699,6 +1700,12 @@ dashboard = page("dashboard.html")
 landing_page = page("landing.html")
 
 
+async def vooy_image(req: Request):
+    """The mascot on /live. A deployment adds the file itself; without it the page draws a plain node."""
+    f = Path(__file__).parent / "vooy.jpg"
+    return Response(f.read_bytes(), media_type="image/jpeg") if f.exists() else err(404, "no mascot on this market")
+
+
 async def landing(req: Request):
     if "admin" in req.query_params:                  # old instructor links: /?admin=<token>
         return RedirectResponse("/dashboard?" + str(req.query_params), status_code=307)
@@ -1758,7 +1765,7 @@ def board(rnd):
                 "review": x["text"], "ts": round(x["ts"])}
 
     def who(p):
-        return {"name": p["name"], "owner": users.get(p["owner"]), "house": p["label"] is not None,
+        return {"name": p["name"], "owner": users.get(p["owner"]), "house": p["label"] not in (None, VOOY), "vooy": p["label"] == VOOY,
                 "joined": round(p["joined"])}
 
     shops = []
@@ -2036,7 +2043,7 @@ async def admin_label(req: Request):
     if not admin_ok(req):
         return err(403, "admin token required")
     b = await body_json(req)
-    M.db.execute("update parties set label=? where role='shop' and name=?", (b["label"], b["name"]))
+    M.db.execute("update parties set label=? where name=?", (b["label"], b["name"]))
     M.db.commit()
     return JSONResponse({"ok": True})
 
@@ -2060,6 +2067,7 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/dashboard", dashboard),
         Route("/board", page("board.html")),
         Route("/live", page("live.html")),
+        Route("/vooy.jpg", vooy_image),
         Route("/join", page("join.html")),
         Route("/kit.tar.gz", kit),
         Route("/install.sh", install),
