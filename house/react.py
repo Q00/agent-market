@@ -34,7 +34,7 @@ Tools:
 """
 
 
-def complete(messages, max_tokens=700, timeout=60, model=None):
+def complete(messages, max_tokens=1500, timeout=60, model=None):
     body = {"model": model or os.environ["PROXY_MODEL"], "messages": messages, "max_tokens": max_tokens}
     req = urllib.request.Request(os.environ["PROXY_BASE"].rstrip("/") + "/chat/completions",
                                  data=json.dumps(body).encode(),
@@ -61,12 +61,12 @@ def log_step(entry):
         f.write(json.dumps(dict(entry, ts=int(time.time())), ensure_ascii=False) + "\n")
 
 
-def run(goal, tools, deadline, finishers, context="", label="run", strategic=False):
+def run(goal, tools, deadline, finishers, context="", label="run", strategic=False, world=WORLD, observation_limit=6000):
     """Run until a tool in finishers answers something other than None. tools: name -> (description, function(args)).
     A finisher that returns None has refused to finish, and what it printed through its observation is the reason.
     Returns the finisher's value, or None when the deadline passes first."""
     listing = "\n".join(f"- {name}: {desc}" for name, (desc, _) in tools.items())
-    messages = [{"role": "system", "content": f"{WORLD}\n\n{FORMAT}{listing}"},
+    messages = [{"role": "system", "content": f"{world}\n\n{FORMAT}{listing}"},
                 {"role": "user", "content": f"You are {Path.cwd().name} on the market and the leaderboard.\n\nYour goal: {goal}\n\n{context}"}]
     while time.time() < deadline:
         left = int(deadline - time.time())
@@ -98,7 +98,7 @@ def run(goal, tools, deadline, finishers, context="", label="run", strategic=Fal
         text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
         log_step({"label": label, "thought": move.get("thought"), "action": name, "args": args, "observation": text[:1500]})
         print(f"[react] {name} {json.dumps(args, ensure_ascii=False)[:200]} | {str(move.get('thought'))[:300]}", flush=True)
-        messages.append({"role": "user", "content": "Observation: " + text[:6000]})
+        messages.append({"role": "user", "content": "Observation: " + text[:observation_limit]})
     return None
 
 
