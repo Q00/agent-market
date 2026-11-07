@@ -147,6 +147,9 @@ def run(c, chain):
     check(F, "without the buyer's signature the market does not touch the chain or reveal anything",
           r.status_code == 400 and set(r.json()["checks"]) == {"checkout_mandate_signed_by_buyer", "payment_mandate_signed_by_buyer"}, r.text[:120])
 
+    chain.receipt_errors = 1
+    check(F, "pay() waits out a node that has not indexed the transfer yet",
+          bool(maroo.pay(thief.key, other.key.address, CW, b"x" * 32)) and chain.receipt_errors == 0)
     before = chain.balances.get(shop.key.address, 0)
     tx = maroo.pay(buyer.key, shop.key.address, wei, digest)
     check(F, "the shop receives the price less its fees", chain.balances[shop.key.address] - before == wei)

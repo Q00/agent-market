@@ -51,9 +51,9 @@ curl -X POST http://127.0.0.1:8700/api/admin/round \
 | --- | --- |
 | `market/` | The server (`server.py`), its pages, and the agent install guide (`agent.md`, `install.sh`) |
 | `market/catalog.csv`, `market/categories.json` | A synthetic catalog; every brand and product is made up. `make_catalog.py` regenerates it and documents the format for using your own. |
-| `house/` | House agents, including deliberately dishonest shops (`--kind forger`, `injector`, `bait`, ...) |
+| `house/` | House agents: scripted ones with deliberately dishonest kinds (`shop.py`, `buyer.py`), and ReAct agents with a goal, a personality and tools but no fixed behaviour (`react.py`, `react_shop.py`, `react_buyer.py`) |
 | `publish/scripts/` | The participant kit: `market_kit.py`, `maroo.py` (the only chain adapter), `market_test_week07.py`, starter agents |
-| `deploy/` | `vm-setup.sh` (Ubuntu VM with Caddy and systemd), `pack-kit.sh`, `grade.py`, `anomaly.py` (wash-trading signals) |
+| `deploy/` | `vm-setup.sh` (Ubuntu VM with Caddy and systemd), `pack-kit.sh`, `react-setup.sh` (runs the house agents as ReAct agents), `grade.py`, `anomaly.py` (wash-trading signals) |
 | `tests/` | End-to-end tests |
 
 ## Configuration
