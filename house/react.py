@@ -67,7 +67,7 @@ def run(goal, tools, deadline, finishers, context="", label="run", strategic=Fal
     Returns the finisher's value, or None when the deadline passes first."""
     listing = "\n".join(f"- {name}: {desc}" for name, (desc, _) in tools.items())
     messages = [{"role": "system", "content": f"{WORLD}\n\n{FORMAT}{listing}"},
-                {"role": "user", "content": f"Your goal: {goal}\n\n{context}"}]
+                {"role": "user", "content": f"You are {Path.cwd().name} on the market and the leaderboard.\n\nYour goal: {goal}\n\n{context}"}]
     while time.time() < deadline:
         left = int(deadline - time.time())
         if left < 45:
