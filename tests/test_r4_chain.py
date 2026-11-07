@@ -84,6 +84,13 @@ def run(c, chain):
     info = c.get(f"{BASE}/api/chain").json()
     check(F, "the market says which chain it pays on", info["chain_id"] == 450815 and info["from_round"] == 4, info["network"])
     check(F, "the live page is served", c.get(f"{BASE}/live").status_code == 200)
+    r = c.post(f"{BASE}/api/admin/label", headers={"x-admin-token": ADMIN}, json={"name": "b2", "label": "vooy"})
+    board = c.get(f"{BASE}/api/board").json()
+    marks = {x["name"]: x.get("vooy") for x in board["buyers"]}
+    check(F, "an agent marked as vooy shows on the board", r.status_code == 200 and marks.get("b2") is True and marks.get("b1") is False, marks)
+    c.post(f"{BASE}/api/admin/label", headers={"x-admin-token": ADMIN}, json={"name": "s2", "label": "switcher"})
+    board = json.dumps(c.get(f"{BASE}/api/board").json())
+    check(F, "a house agent's hidden label stays hidden", "switcher" not in board)
     check(F, "an address that is not a wallet cannot join",
           c.post(f"{BASE}/api/join", json={"name": "x", "role": "buyer", "pubkey": "abc"}).status_code == 400)
 
