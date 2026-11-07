@@ -182,7 +182,7 @@ def restock(a):
         "finish": ("end this run. args {buy: [{sku, qty up to 20}]} (at most 10 lines), and bankrupt: true to file for bankruptcy", finish),
     })
     context = react.forum_digest() + "\n\nYour notes:\n" + react.read_notes()
-    react.run(RESTOCK.format(persona=a.persona), tools, time.time() + 120, {"finish"}, context, label="restock")
+    react.run(RESTOCK.format(persona=a.persona), tools, time.time() + 120, {"finish"}, context, label="restock", strategic=True)
     print(json.dumps(result or {"buy": []}, ensure_ascii=False), flush=True)
 
 
