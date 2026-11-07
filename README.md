@@ -56,6 +56,10 @@ curl -X POST http://127.0.0.1:8700/api/admin/round \
 | `deploy/` | `vm-setup.sh` (Ubuntu VM with Caddy and systemd), `pack-kit.sh`, `react-setup.sh` (runs the house agents as ReAct agents), `grade.py`, `anomaly.py` (wash-trading signals) |
 | `tests/` | End-to-end tests |
 
+## Detective scenario
+
+On a demo market only: `deploy/scenario-planted.sh` plants dishonest agents, `deploy/detective-setup.sh` runs a Market Detective MCP server in a sandboxed account, and `deploy/run-detective.sh` sends in a ReAct detective (`house/detective.py`) and grades its report against an answer key it never sees.
+
 ## Configuration
 
 Everything is set through environment variables. `.env.example` lists the ones needed for a deployment.
