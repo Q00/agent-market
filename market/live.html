@@ -377,6 +377,7 @@ async function loadHistory() {
 
 async function pollLedger() {
   for (const r of await get(`/api/ledger?after=${seq}`)) {
+    if (r.seq <= seq) continue;                          // a slow reply can overlap the next poll: count each entry once
     seq = r.seq;
     if (r.kind !== "settle") continue;
     lastDeal[r.data.buyer] = lastDeal[shopName(r.data.shop)] = r.ts;
