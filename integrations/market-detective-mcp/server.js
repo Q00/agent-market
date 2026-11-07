@@ -1,6 +1,7 @@
 // 마켓 수사대 MCP 서버
 // Agent Market 공개 GET API만 읽고 시장에는 아무것도 쓰지 않습니다.
 // record_finding은 이 서버의 로컬 사건 기록(data/findings.jsonl)에만 저장합니다.
+import { webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import express from "express";
 import { z } from "zod";
@@ -11,6 +12,9 @@ import { recordFinding } from "./lib/findings.js";
 import { FIXTURE_DIR } from "./lib/paths.js";
 import { agentStatus, joinMarket, leaveMarket, setAgentPolicy, syncFindings } from "./lib/join-runner.js";
 import { getStore } from "./lib/store.js";
+
+// Node 18에는 전역 crypto가 없어 MCP SDK가 요청 처리 중 실패합니다.
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 const MARKET = process.env.MARKET_BASE || "https://hack.ourolabs.ai";
 const PORT = Number(process.env.PORT || 8787);
