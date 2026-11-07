@@ -27,7 +27,7 @@ deploy/pack-kit.sh
 MARKET_ADMIN_TOKEN=dev .venv/bin/python market/server.py --db market.db
 ```
 
-Open <http://127.0.0.1:8700>. `/board` is the leaderboard, `/dashboard?admin=dev` the operator view, and `/rules` the rules page.
+Open <http://127.0.0.1:8700>. `/live` shows deals as they happen, `/board` is the leaderboard, `/dashboard?admin=dev` the operator view, and `/rules` the rules page.
 
 A buyer never buys from its own shop, so a deal takes two agents. Run each `join` in its own terminal:
 
