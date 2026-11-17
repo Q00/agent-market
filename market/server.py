@@ -45,6 +45,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import multiprocessing
 import math
 import os
 import random
@@ -55,7 +56,10 @@ import sys
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+import types
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -654,15 +658,21 @@ async def agents(req: Request):
 
 async def probe_loop():
     while True:                                      # probe first, so a restart does not leave every shop "gone"
-        rows = M.db.execute("select token, url from parties where role='shop'").fetchall()
+        rows = M.db.execute("select token, url, alive from parties where role='shop'").fetchall()
         gate = asyncio.Semaphore(16)
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as c:
             async def probe(r):
                 async with gate:
-                    with contextlib.suppress(Exception):
-                        if not await url_problem(r["url"]):
+                    problem = None
+                    try:
+                        problem = await url_problem(r["url"])
+                        if not problem:
                             await read_card(c, r["url"])
                             M.db.execute("update parties set alive=? where token=?", (time.time(), r["token"]))
+                    except Exception as e:
+                        problem = type(e).__name__
+                    if problem and time.time() - (r["alive"] or 0) < ALIVE_FOR:   # only shops that were up: say why
+                        print(f"probe missed {r['url']}: {problem}", flush=True)
             await asyncio.gather(*(probe(r) for r in rows))
         M.db.commit()
         await asyncio.sleep(PROBE_EVERY)
@@ -1698,7 +1708,43 @@ async def checkpoint_loop():
 
 async def api_stats(req: Request):
     reveal = admin_ok(req)
-    return JSONResponse(await snapshot(("stats", reveal), lambda: stats(reveal=reveal)))
+    return JSONResponse(await snapshot(("stats", reveal), lambda: in_view_process(stats, reveal)))
+
+
+# Board and stats are pure reads, but heavy: computed in a thread they held the GIL for seconds at a time, and every
+# row the event loop read waited for it (event loop stalls, missed shop probes). Their own process has its own GIL.
+VIEW_PROCS = [None]
+VIEW_LOCK = threading.Lock()
+VIEW_TIMEOUT = 300         # seconds; a hung view process must not hold SNAP_GATE (and the WAL truncation) forever
+
+
+def view_init(path, catalog_csv, rules):
+    """Initializer of the view process: reader() needs only the path, item_label() the catalog. It never writes."""
+    global M, CAT
+    M = types.SimpleNamespace(path=path)
+    CAT = Catalog(catalog_csv, rules)
+
+
+def in_view_process(fn, *args):
+    """fn(*args) in the view process. A broken or hung process is replaced, and the call tried once more."""
+    for attempt in range(2):
+        with VIEW_LOCK:
+            if VIEW_PROCS[0] is None:
+                VIEW_PROCS[0] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                                                    initializer=view_init, initargs=(M.path, *CAT_ARGS))
+            procs = VIEW_PROCS[0]
+        try:
+            return procs.submit(fn, *args).result(timeout=VIEW_TIMEOUT)
+        except (BrokenProcessPool, FutureTimeout) as e:
+            print(f"view process {type(e).__name__} in {fn.__name__}; starting a new one", flush=True)
+            with VIEW_LOCK:
+                if VIEW_PROCS[0] is procs:
+                    VIEW_PROCS[0] = None
+            for proc in list((getattr(procs, "_processes", None) or {}).values()):   # a hung child is not stopped by shutdown
+                proc.terminate()
+            procs.shutdown(wait=False, cancel_futures=True)
+            if attempt:
+                raise
 
 
 READ_POOL = ThreadPoolExecutor(4, thread_name_prefix="read")    # many-row reads stay off the event loop
@@ -1966,7 +2012,7 @@ def econ_board(db, rnd, shops, buyers, shop_of, stars_of):
 async def api_board(req: Request):
     rnd = req.query_params.get("round", "")
     rnd = int(rnd) if rnd.isascii() and rnd.isdigit() and int(rnd) <= M.round() else M.round()
-    return JSONResponse(await snapshot(("board", rnd), lambda: board(rnd)))
+    return JSONResponse(await snapshot(("board", rnd), lambda: in_view_process(board, rnd)))
 
 
 async def api_shop_reviews(req: Request):
@@ -2122,6 +2168,10 @@ async def lifespan(app):
     yield
     for t in tasks:
         t.cancel()
+    with VIEW_LOCK:
+        procs, VIEW_PROCS[0] = VIEW_PROCS[0], None
+    if procs is not None:
+        procs.shutdown(wait=False, cancel_futures=True)
 
 
 def entity_settings():
@@ -2136,8 +2186,9 @@ ENTITY_CARDS = entities.routes(lambda req: BASE_URL or str(req.base_url).rstrip(
 
 
 def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
-    global M, CAT
+    global M, CAT, CAT_ARGS
     CAT = Catalog(catalog_csv, rules)
+    CAT_ARGS = (str(catalog_csv), str(rules))       # the view process builds its own catalog from the same files
     M = Market(db)
     return Starlette(lifespan=lifespan, exception_handlers={BadBody: lambda req, e: err(400, str(e))}, routes=[
         Route("/", landing),
