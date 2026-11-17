@@ -68,6 +68,7 @@ from starlette.routing import Route
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "publish/scripts"))
 import maroo  # noqa: E402
+import entities  # noqa: E402  (market/: the entities' Agent Cards, Round 4)
 
 RESERVE = {"lamp": 100, "chair": 180, "bookshelf": 260}
 BUDGET_FACTORS = [0.9, 1.05, 1.15, 1.25, 1.4]      # 0.9 is below every reserve: a buyer must walk away
@@ -93,6 +94,8 @@ REJOIN_SKEW = 600                                    # seconds a signed rejoin s
 
 ECON_ROUND = 3                                       # the round the economy starts in
 CHAIN_ROUND = 4                                      # the round deals start being paid on Maroo testnet
+PERSONA = "persona"                                  # the label of the market's LLM customers (Nemotron personas)
+PERSONA_DAILY = int(os.environ.get("MARKET_PERSONA_DAILY", "300000"))   # credits a customer may spend in 24 h
 VOOY = "vooy"                                        # the one public label: /live draws this agent with its mascot
 START_CAPITAL = int(os.environ.get("MARKET_START_CAPITAL", "5000000"))
 POPULARITY_EXP = 0.7                                 # orders per SKU ~ 1/rank^0.7: the top 100 SKUs draw about a quarter
@@ -294,7 +297,8 @@ class Market:
         create index if not exists shop_urls_name on shop_urls(name);
         """)
         migrate = {"parties": {"owner": "text", "card": "text"},           # added after the first deployment
-                   "orders": {"category": "text", "acceptable": "text", "use_within": "real"},
+                   "orders": {"category": "text", "acceptable": "text", "use_within": "real",
+                              "credits_only": "int default 0"},
                    "wallets": {"injected": "int default 0", "bankruptcies": "int default 0", "fee_at": "real"},
                    "settlements": {"unit": "text", "cost": "int", "grade": "text", "expires_at": "real",
                                    "claim": "text", "claim_honest": "int", "warranty_hours": "real",
@@ -552,6 +556,12 @@ async def do_join(b, ip, owner):
         except Exception as e:
             return err(400, f"cannot read an agent card at {url}/.well-known/agent-card.json ({type(e).__name__})")
         card = json.dumps(card_summary(card, url), ensure_ascii=False)
+    elif url:                                        # Round 4: a buyer may name the card of the agent it belongs to
+        if urlparse(url).scheme not in ("http", "https") or urlparse(url).query or urlparse(url).fragment:
+            return err(400, "the card URL must be http(s) with no query or fragment")
+        problem = await url_problem(url)
+        if problem:
+            return err(400, problem)
     if owner and not (old and old["owner"] == owner):
         n = M.db.execute("select count(*) from parties where owner=?", (owner,)).fetchone()[0]
         if n >= MAX_PER_OWNER:
@@ -561,6 +571,8 @@ async def do_join(b, ip, owner):
             M.db.execute("update parties set owner=? where token=?", (owner, old["token"]))
         if card:
             M.db.execute("update parties set card=? where token=?", (card, old["token"]))
+        if role == "buyer" and url and old["url"] != url:
+            M.db.execute("update parties set url=? where token=?", (url, old["token"]))
         if role == "shop" and old["url"] != url:
             M.db.execute("update parties set url=?, alive=? where token=?", (url, time.time(), old["token"]))
             M.db.execute("insert or replace into shop_urls values(?,?)", (url, name))
@@ -629,6 +641,17 @@ async def shops(req: Request):
     return JSONResponse({"round": rnd, "shops": out})
 
 
+async def agents(req: Request):
+    """Round 4: every agent by name, with the roles it holds and the card it gave (shops and buyers alike)."""
+    out = {}
+    for r in M.db.execute("select name, role, url, owner from parties order by joined"):
+        a = out.setdefault(r["name"], {"name": r["name"], "roles": [], "card": None, "owner": r["owner"]})
+        a["roles"].append(r["role"])
+        if r["url"]:
+            a["card"] = a["card"] or r["url"].rstrip("/") + "/.well-known/agent-card.json"
+    return JSONResponse({"round": M.round(), "agents": list(out.values())[-1000:]})
+
+
 async def probe_loop():
     while True:                                      # probe first, so a restart does not leave every shop "gone"
         rows = M.db.execute("select token, url from parties where role='shop'").fetchall()
@@ -652,6 +675,8 @@ async def new_order(req: Request):
     if p is None:
         return err(401, "join as a buyer first")
     now = time.time()
+    if p["label"] == PERSONA and int(req.headers.get("content-length") or 0) > 0:
+        return await persona_order(p, await body_json(req), now)
     last = M.db.execute("select * from orders where buyer=? order by issued desc limit 1", (p["name"],)).fetchone()
     if last and not last["done"] and last["expires"] > now:
         return JSONResponse(order_json(last))                      # still open: the same order again
@@ -687,6 +712,47 @@ async def new_order(req: Request):
     return JSONResponse(order_json(o))
 
 
+def persona_left(name, now):
+    spent = M.db.execute("select coalesce(sum(s.price), 0) from settlements s join orders o on o.id=s.order_id"
+                         " where s.buyer=? and s.ts>? and o.credits_only=1", (name, now - 86400)).fetchone()[0]
+    return PERSONA_DAILY - spent
+
+
+async def customer(req: Request):
+    """A persona customer's own view: credits left for today."""
+    p = M.party(req, "buyer")
+    if p is None or p["label"] != PERSONA:
+        return err(401, "customers only")
+    return JSONResponse({"name": p["name"], "credits_left": persona_left(p["name"], time.time()), "daily": PERSONA_DAILY})
+
+
+async def persona_order(p, b, now):
+    """A customer's own order: the SKU it chose and what it is willing to pay, out of its daily credits. The market
+    pays the shop in credits when it settles (customers hold no tOKRW); every other check of /api/settle applies."""
+    info = CAT.sku.get(str(b.get("sku", "")))
+    budget = b.get("budget")
+    if info is None:
+        return err(400, "unknown sku")
+    if type(budget) is not int or budget <= 0:
+        return err(400, "budget must be a positive whole number of credits")
+    left = persona_left(p["name"], now)
+    if budget > left:
+        return err(402, f"this customer has {left} credits left for today")
+    M.db.execute("update orders set done=1 where buyer=? and done=0 and credits_only=1", (p["name"],))
+    oid = "o-" + secrets.token_hex(6)
+    M.db.execute("insert into orders(id, buyer, item, budget, expires, nonce, issued, round, done, category,"
+                 " acceptable, use_within, credits_only) values(?,?,?,?,?,?,?,?,0,?,?,?,1)",
+                 (oid, p["name"], info["sku"], budget, now + ORDER_TTL, secrets.token_hex(8), now, M.round(),
+                  info["category"], json.dumps([info["sku"]]), None))
+    M.db.commit()
+    o = M.db.execute("select * from orders where id=?", (oid,)).fetchone()
+    pub = {k: order_json(o)[k] for k in ("order", "buyer", "expires", "round")}
+    pub["budget_commitment"] = hashlib.sha256(canon({"budget": o["budget"], "salt": o["nonce"]})).hexdigest()
+    pub["customer"] = True
+    M.append("order", pub)
+    return JSONResponse(dict(order_json(o), credits_left=left))
+
+
 def order_json(o):
     j = {"order": o["id"], "buyer": o["buyer"], "item": o["item"], "budget": o["budget"],
          "expires": int(o["expires"]), "nonce": o["nonce"], "round": M.round()}
@@ -698,7 +764,7 @@ def order_json(o):
         j["mandates"] = {k: {"mandate": m, "sig": base64.b64encode(M.key.sign(canon(m))).decode()}
                          for k, m in open_mandates(o).items()}
         j["market_pubkey"] = M.pubkey
-    if o["round"] >= CHAIN_ROUND:
+    if o["round"] >= CHAIN_ROUND and not o["credits_only"]:
         j["chain"] = {"credit_wei": maroo.CREDIT_WEI, "market_fee_bps": maroo.MARKET_FEE_BPS,
                       "network_fee_credits": maroo.NETWORK_FEE_CREDITS, "market_address": M.pubkey}
     return j
@@ -748,7 +814,7 @@ async def settle(req: Request):
     econ = bool(o["category"])
     # Round 4: ask the chain first, with no state read before it, so the checks below run with no await between them.
     # Only the buyer's signature gets this far, so nobody else can make the market call the chain.
-    on_chain = o["round"] >= CHAIN_ROUND
+    on_chain = o["round"] >= CHAIN_ROUND and not o["credits_only"]   # a persona customer pays in credits
     tx_hash, fee_tx_hash, tx_problem = pmm.get("tx_hash"), pmm.get("fee_tx_hash"), None
     fee = maroo.fees(price) if type(price) is int and price >= 0 else {"shop": 0, "buyer": 0, "market": 0}
     if on_chain and buyer and verify(buyer["pubkey"], pm.get("sig") if isinstance(pm, dict) else None, pmm):
@@ -1784,7 +1850,7 @@ def board(rnd):
                                      if isinstance(x.get("price"), (int, float)) and x.get("item") in RESERVE)))
     buyers = []
     for p in parties:
-        if p["role"] != "buyer":
+        if p["role"] != "buyer" or p["label"] == PERSONA:   # customers are the market's own; they are not ranked
             continue
         mine = by_buyer.get(p["name"], [])
         got = [r for r in mine if counted(r, rnd) and r["budget"]]
@@ -2058,6 +2124,17 @@ async def lifespan(app):
         t.cancel()
 
 
+def entity_settings():
+    return {"MARKET_FEE_BPS": maroo.MARKET_FEE_BPS, "NETWORK_FEE_CREDITS": maroo.NETWORK_FEE_CREDITS,
+            "ORDER_GAP": ORDER_GAP, "ORDER_TTL": ORDER_TTL, "MAX_WARRANTY_HOURS": MAX_WARRANTY_HOURS,
+            "STORAGE_PER_DAY": STORAGE_PER_DAY, "SUPPLY_OPEN": SUPPLY_OPEN, "SUPPLY_MAX": SUPPLY_MAX,
+            "SUPPLY_GAP": SUPPLY_GAP, "BANKRUPT_LINE": BANKRUPT_LINE, "BANKRUPT_MAX": BANKRUPT_MAX,
+            "FORUM_GAP": FORUM_GAP, "FORUM_MAX": FORUM_MAX, "VOTE_MIN_DEALS": VOTE_MIN_DEALS}
+
+
+ENTITY_CARDS = entities.routes(lambda req: BASE_URL or str(req.base_url).rstrip("/"), entity_settings)
+
+
 def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
     global M, CAT
     CAT = Catalog(catalog_csv, rules)
@@ -2082,6 +2159,8 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/auth/logout", gh_logout),
         Route("/api/join", join, methods=["POST"]),
         Route("/api/shops", shops),
+        Route("/api/agents", agents),
+        Route("/api/customer", customer),
         Route("/api/orders", new_order, methods=["POST"]),
         Route("/api/results", result, methods=["POST"]),
         Route("/api/settle", settle, methods=["POST"]),
@@ -2107,6 +2186,8 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/api/admin/label", admin_label, methods=["POST"]),
         Route("/api/admin/forum-hide", admin_hide, methods=["POST"]),
         Route("/api/admin/notice", admin_notice, methods=["POST"]),
+        Route("/.well-known/agent-card.json", ENTITY_CARDS[0]),
+        Route("/entities/{entity}/.well-known/agent-card.json", ENTITY_CARDS[1]),
     ])
 
 
