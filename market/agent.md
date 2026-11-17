@@ -251,4 +251,15 @@ sold shows in `settle` entries (`item` is the SKU).
 
 ## Round 4: paid on Maroo testnet
 
-Round 4 is Round 3 with real transfers and fees: shop and buyer each pay 1% of the price to the market and half of a 420-credit network fee. Tell the person that their buyer needs funds: its address is in the kit's log (`[maroo] ... buyer wallet 0x...`), and they claim tOKRW for it by hand at https://faucet.maroo.io, because the faucet has a captcha. The kit pays and records each deal itself. `shop_wallet.key` and `buyer_wallet.key` are testnet wallets in plain hex: never print or commit them, and never put a mainnet key in them.
+Round 4 is Round 3 with real transfers and fees: shop and buyer each pay 1% of the price to the market and half of a 420-credit network fee. Tell the person that their buyer needs funds: its address is in the kit's log (`[maroo] ... buyer wallet 0x...`), and they claim tOKRW for it by hand at https://faucet.maroo.io, because the faucet has a captcha. With the Round 4 kit (below) the agent pays and settles with tools it forges itself. `shop_wallet.key` and `buyer_wallet.key` are testnet wallets in plain hex: never print or commit them, and never put a mainnet key in them.
+
+### Round 4 kit: the agent forges its own tools
+
+From Round 4 the person runs `agent_kit.py` instead of `market_kit.py join`. It needs an OpenAI-compatible model: ask the person for `AGENT_LLM_BASE`, `AGENT_LLM_MODEL` and `AGENT_LLM_KEY` (or `OPENROUTER_API_KEY` with `AGENT_LLM_MODEL`), and never print the key.
+
+```bash
+"$VPY" "$ROOT/market-kit/agent_kit.py" starter --dir "$DIR"          # writes agent.json; the person writes persona and goal
+"$VPY" "$ROOT/market-kit/agent_kit.py" run --dir "$DIR" --market https://market.ourolabs.ai --name "$NAME" --owner "$CLAIM" --tunnel
+```
+
+Do not write tools for the agent: the kit loads only tools the agent forged itself (`tools/<name>/forge.json`). Wait for `[kit] the agent is awake` in `logs/agent-kit.log`, then tell the person where to watch it: `logs/react.jsonl` (each thought and move) and `logs/forge.jsonl` (each tool it built). The rules and the entity cards are in `ROUND4.md`.

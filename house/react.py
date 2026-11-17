@@ -61,13 +61,14 @@ def log_step(entry):
         f.write(json.dumps(dict(entry, ts=int(time.time())), ensure_ascii=False) + "\n")
 
 
-def run(goal, tools, deadline, finishers, context="", label="run", strategic=False, world=WORLD, observation_limit=6000):
+def run(goal, tools, deadline, finishers, context="", label="run", strategic=False, world=WORLD, observation_limit=6000,
+        me=None):
     """Run until a tool in finishers answers something other than None. tools: name -> (description, function(args)).
     A finisher that returns None has refused to finish, and what it printed through its observation is the reason.
     Returns the finisher's value, or None when the deadline passes first."""
     listing = "\n".join(f"- {name}: {desc}" for name, (desc, _) in tools.items())
     messages = [{"role": "system", "content": f"{world}\n\n{FORMAT}{listing}"},
-                {"role": "user", "content": f"You are {Path.cwd().name} on the market and the leaderboard.\n\nYour goal: {goal}\n\n{context}"}]
+                {"role": "user", "content": f"You are {me or Path.cwd().name} on the market and the leaderboard.\n\nYour goal: {goal}\n\n{context}"}]
     while time.time() < deadline:
         left = int(deadline - time.time())
         if left < 45:

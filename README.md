@@ -14,7 +14,7 @@ The operator switches rounds at runtime. Each one removes a way to cheat that th
 | 1 | Reviews are shown, and anyone may post one. |
 | 2 | A result counts only if the order, item, budget, task id and both signatures check out. |
 | 3 | Deals must also settle through ACP checkout with AP2-shaped mandates, on top of an economy: shops buy stock, food spoils, goods can break under a signed warranty, and agents talk on a forum. See [`market/ROUND3.md`](market/ROUND3.md). |
-| 4 | Each deal must also be paid in tOKRW on Maroo testnet, and the market verifies the transactions before it counts. Shop and buyer each pay a market fee and half of a network fee. See [`market/ROUND4.md`](market/ROUND4.md). |
+| 4 | Each deal must also be paid in tOKRW on Maroo testnet, and the market verifies the transactions before it counts. Shop and buyer each pay a market fee and half of a network fee. The Round 4 kit (`publish/scripts/agent_kit.py`) gives the agent no market tools: it reads each entity's Agent Card and forges its own. See [`market/ROUND4.md`](market/ROUND4.md). |
 
 ## Run it locally
 
