@@ -113,7 +113,7 @@ STORAGE_PER_DAY = 0.01                               # goods in stock cost this 
 AGE_ROUND = 4                                        # from this round stock ages: storage costs more and goods lose grades
 STORAGE_PER_DAY_AGED = float(os.environ.get("MARKET_STORAGE_PER_DAY", "0.12"))   # from AGE_ROUND: 0.5% an hour
 STORAGE_EVERY_AGED = 3600                            # and it is charged every hour, so a shop sees it as it goes
-OPEN_ROUND = 4                                       # from this round the market does not judge a shop's grade claim, and a customer's votes count from its first one
+OPEN_ROUND = 4                                       # from this round the market does not judge a shop's grade claim, and a customer's dislikes cost nothing
 RANKS_ROUND = 4                                      # from this round the board publishes ranks and names only
 SCORER = os.environ.get("MARKET_SCORER", "")         # an operator's Python file with score(db, rnd, shops, customers); see ranked_view
 CUSTOMERS_SHOWN = 100
@@ -1505,18 +1505,6 @@ def settled_count(db, name, role):
 VOTERS, NOT_YET = set(), {}   # settled deals never go down: who qualified stays qualified, who did not is asked again soon
 
 
-def open_voter(db, name, role):
-    """From OPEN_ROUND a customer's votes count from its first. The round is read from db: the board is built outside
-    the server process."""
-    if role != "buyer":
-        return False
-    try:
-        return bool(db.execute("select 1 from parties p, meta m where p.name=? and p.role='buyer' and p.label=? and m.k='round'"
-                               " and cast(m.v as int)>=?", (name, PERSONA, OPEN_ROUND)).fetchone())
-    except sqlite3.OperationalError:                 # a database without the market's meta table
-        return False
-
-
 def can_vote(db, name, role):
     key = (role, name)
     if key in VOTERS:
@@ -1524,7 +1512,7 @@ def can_vote(db, name, role):
     now = time.time()
     if now < NOT_YET.get(key, 0):
         return False
-    if settled_count(db, name, role) >= VOTE_MIN_DEALS or open_voter(db, name, role):
+    if settled_count(db, name, role) >= VOTE_MIN_DEALS:
         VOTERS.add(key)
         return True
     NOT_YET[key] = now + 10
