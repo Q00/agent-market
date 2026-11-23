@@ -338,6 +338,7 @@ class Market:
         create index if not exists units_shop on units(shop, status);
         create index if not exists units_supplied on units(supplied_at, sku);
         create table if not exists wallets(shop text primary key, balance int, start int, created real);
+        create table if not exists grants_due(id integer primary key, shop text, credits int, why text, ts real);
         create table if not exists tastes(buyer text primary key, categories text);
         create table if not exists forum(id integer primary key, ts real, round int, author text, role text,
             owner text, thread int, text text, refs text, hidden int default 0);
@@ -426,39 +427,50 @@ class Market:
                             (shop, START_CAPITAL, START_CAPITAL, time.time()))
             self.db.commit()
             if coin(self.round()):                       # the starting capital goes to the shop's wallet, in tOKRW
-                grant(shop, START_CAPITAL, "start")
+                grant(self.db, shop, START_CAPITAL, "start")
             w = self.db.execute("select * from wallets where shop=?", (shop,)).fetchone()
         return w
 
 
 M: Market = None
-GRANTS = None                                        # queue of (shop, credits, why): one sender, so one nonce at a time
+GRANTS = None                                        # queue of (id, shop, credits, why, tries): one sender, so one nonce at a time
 FILED, FILING_GAP = {}, 300                          # shop -> when it last filed for bankruptcy; seconds before it may again
 QUOTES = {}                                          # quote id -> a lot drawn for a shop, waiting for its payment
 
 
-def grant(shop, credits, why):
+def grant(db, shop, credits, why):
+    """Money the market owes a shop's wallet. It is written down first, so a restart or a failed transfer cannot lose
+    it: it stays due until the chain shows it paid."""
+    cur = db.execute("insert into grants_due(shop, credits, why, ts) values(?,?,?,?)", (shop, credits, why, time.time()))
+    db.commit()
     if GRANTS is not None:
-        GRANTS.put((shop, credits, why))
+        GRANTS.put((cur.lastrowid, shop, credits, why, 0))
 
 
 def grant_loop():
-    """The market's wallet pays out starting capital and bankruptcy money, one transfer at a time."""
+    """The market's wallet pays out starting capital and bankruptcy money, one transfer at a time. A transfer that
+    fails (the wallet is empty, the chain is away) is tried again until it goes through."""
     db = sqlite3.connect(M.path, timeout=30)
     db.row_factory = sqlite3.Row
     while True:
-        shop, credits, why = GRANTS.get()
+        gid, shop, credits, why, tries = GRANTS.get()
         try:
             p = db.execute("select pubkey from parties where name=? and role='shop'", (shop,)).fetchone()
-            if p is None:
+            if p is None or db.execute("select 1 from grants_due where id=?", (gid,)).fetchone() is None:
                 continue
             tx = maroo.pay(M.key, p["pubkey"], credits * maroo.CREDIT_WEI)
+            db.execute("delete from grants_due where id=?", (gid,))
+            db.commit()
             GRANTED.append({"shop": shop, "credits": credits, "why": why, "tx_hash": tx})
-        except Exception as e:                       # the market's wallet is empty or the chain is away: say so, keep going
-            print(f"grant to {shop} ({credits} credits, {why}) failed: {type(e).__name__}: {str(e)[:160]}", flush=True)
-            GRANTED.append({"shop": shop, "credits": credits, "why": why, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+        except Exception as e:                       # say so once on the ledger, and keep trying
+            print(f"grant to {shop} ({credits} credits, {why}) failed, try {tries + 1}: {type(e).__name__}: {str(e)[:160]}", flush=True)
+            if tries == 0:
+                GRANTED.append({"shop": shop, "credits": credits, "why": why, "waiting": f"{type(e).__name__}: {str(e)[:120]}"})
+            time.sleep(GRANT_RETRY)
+            GRANTS.put((gid, shop, credits, why, tries + 1))
 
 
+GRANT_RETRY = 20                                     # seconds before a failed grant is tried again
 GRANTED = []                                         # done grants, written to the ledger by the event loop (econ_sweep)
 
 
@@ -1222,14 +1234,15 @@ async def bankruptcy(req: Request):
         return err(403, f"bankruptcy opens in Round {ECON_ROUND}")
     have = M.wallet(p["name"])["balance"]
     if coin():                                       # what counts is what the wallet holds
-        if time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # the last filing's money may still be on its way
-            return err(409, f"this shop filed less than {FILING_GAP} s ago; its money is on the way")
+        owed = lambda: M.db.execute("select 1 from grants_due where shop=?", (p["name"],)).fetchone() is not None
+        if owed() or time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # starting capital or the last filing's money
+            return err(409, "the market's money is still on its way to this shop's wallet; look at the wallet again shortly")
         try:
             have = (await maroo.balance_async(p["pubkey"])) // maroo.CREDIT_WEI
         except (httpx.HTTPError, RuntimeError, ValueError):
             return err(503, "the chain cannot be read right now; try again")
-        if time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # another filing got in while the chain was read
-            return err(409, f"this shop filed less than {FILING_GAP} s ago; its money is on the way")
+        if owed() or time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # another filing got in while the chain was read
+            return err(409, "the market's money is still on its way to this shop's wallet; look at the wallet again shortly")
     w = M.wallet(p["name"])                          # read after the wait: nothing below waits
     if have >= BANKRUPT_LINE:
         return err(409, f"the balance is {have}; filing needs less than {BANKRUPT_LINE}")
@@ -1243,7 +1256,7 @@ async def bankruptcy(req: Request):
     M.db.commit()
     if coin():
         FILED[p["name"]] = time.time()
-        grant(p["name"], given, "bankruptcy")
+        grant(M.db, p["name"], given, "bankruptcy")
     M.append("bankrupt", {"shop": p["name"], "given": given, "seized_units": len(seized),
                           "seized_cost": sum(u["cost"] for u in seized), "filing": w["bankruptcies"] + 1})
     return JSONResponse({"balance": w["start"], "given": given, "seized_units": len(seized),
@@ -2457,6 +2470,8 @@ async def admin_label(req: Request):
 async def lifespan(app):
     global GRANTS
     GRANTS = queue.Queue()
+    for g in M.db.execute("select * from grants_due order by id"):   # owed when the market last stopped
+        GRANTS.put((g["id"], g["shop"], g["credits"], g["why"], 0))
     threading.Thread(target=grant_loop, daemon=True).start()
     tasks = [asyncio.create_task(probe_loop()), asyncio.create_task(refresh_loop()), asyncio.create_task(econ_loop()),
              asyncio.create_task(checkpoint_loop()), asyncio.create_task(beat_loop())]
