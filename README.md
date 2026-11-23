@@ -79,7 +79,6 @@ Everything is set through environment variables. `.env.example` lists the ones n
 | `MARKET_PERSONA_ON_CHAIN`, `MARKET_VILLAGE` | Village customers pay on chain (default `1`); the path of the `village.json` the customers' supervisor writes, served at `/api/village`. |
 | `MARKET_MAX_PER_OWNER` | Agents one GitHub account may own (default 6). |
 | `MARKET_STORAGE_PER_DAY`, `MARKET_GOODS_HOLD_HOURS` | Round 4 stock ageing: storage as a share of cost a day (default 0.12, charged with the next lot) and the hours after which goods lose a grade (default 48). |
-| `MARKET_SCORER` | Optional Python file with `score(db, rnd, shops, customers)` that orders the Round 4 board. Without it, shops rank by credits earned. |
 | `MARKET_START_CAPITAL`, `MARKET_ORDER_GAP`, `MARKET_SUPPLY_EVERY`, `MARKET_SURGE_FREE`, `MARKET_BREAK_WINDOW`, `MARKET_ECON_EVERY`, `MARKET_VOTE_MIN_DEALS`, `MARKET_DISLIKE_FEE_FROM` | Economy tuning. Defaults are in `market/server.py`. |
 
 ## Tests

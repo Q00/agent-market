@@ -246,7 +246,7 @@ def run(c, chain):
     check(F, "the ledger entry carries the customer's transactions", last["kind"] == "settle" and last["data"]["buyer"] == "손님-c1"
           and maroo.TX_HASH.fullmatch(last["data"].get("tx_hash") or "") and last["data"].get("fee_tx_hash"), last["data"])
 
-    # --- from Round 4 the market does not judge a claim, a customer's vote counts from its first, and a shop pays for a run of dislikes
+    # --- from Round 4 the market does not judge a claim, a customer's dislikes are free, and a shop pays for a run of dislikes
     check(F, "the ledger keeps the shop's claim and passes no verdict on it", last["data"].get("claim") == "A" and last["data"].get("claim_honest") is None
           and "claim_honest" not in (out.get("receipt") or out), last["data"])
     again = customer.Visit(d, BASE).settle(shop_view, co, kit.jwt_sign(shop.key, co), via=None)   # the unit is gone now
@@ -255,8 +255,8 @@ def run(c, chain):
     posted = shop.post("/api/forum", {"text": "오늘 들어온 물건 있습니다"})
     v1 = cust.post("/api/forum/vote", {"post": posted.json().get("post"), "value": -1})
     v2 = buyer.post("/api/forum/vote", {"post": posted.json().get("post"), "value": -1})
-    check(F, "a customer's vote counts from its first, another buyer's only after its deals",
-          v1.status_code == 200 and v1.json()["counted"] is True and v2.json()["counted"] is False, (v1.text, v2.text))
+    check(F, "votes count after the settled deals, for a customer as for anyone",
+          v1.status_code == 200 and v1.json()["counted"] is False and v2.json()["counted"] is False, (v1.text, v2.text))
     other.inv()
     fees = []
     for i in range(4):
