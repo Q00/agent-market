@@ -45,6 +45,8 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import multiprocessing
+import queue
 import math
 import os
 import random
@@ -55,7 +57,10 @@ import sys
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+import types
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -85,7 +90,7 @@ BASE_URL = os.environ.get("MARKET_BASE_URL", "").rstrip("/")
 GH_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GH_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 SESSION_SECRET = (os.environ.get("MARKET_SESSION_SECRET") or secrets.token_hex(32)).encode()
-MAX_PER_OWNER = 6
+MAX_PER_OWNER = int(os.environ.get("MARKET_MAX_PER_OWNER", "6"))   # agents one GitHub account may own
 JOINS_PER_IP_HOUR = 150                          # a whole class can sit behind one NAT address
 MAX_BODY = 64 * 1024
 MAX_CARD = 64 * 1024
@@ -95,12 +100,24 @@ REJOIN_SKEW = 600                                    # seconds a signed rejoin s
 ECON_ROUND = 3                                       # the round the economy starts in
 CHAIN_ROUND = 4                                      # the round deals start being paid on Maroo testnet
 PERSONA = "persona"                                  # the label of the market's LLM customers (Nemotron personas)
+COIN = os.environ.get("MARKET_COIN", "1") == "1"     # from CHAIN_ROUND a shop's money is the tOKRW in its wallet (0: the book, as Round 3)
+QUOTE_KEEP = 6 * 3600                                # a quote that ran out is kept this long, for a transfer that came late
+QUOTE_TTL = 120                                      # seconds a supply quote waits for its payment
+PERSONA_ON_CHAIN = os.environ.get("MARKET_PERSONA_ON_CHAIN", "1") == "1"   # customers pay in tOKRW like any buyer (0: in credits)
 PERSONA_DAILY = int(os.environ.get("MARKET_PERSONA_DAILY", "300000"))   # credits a customer may spend in 24 h
 VOOY = "vooy"                                        # the one public label: /live draws this agent with its mascot
 START_CAPITAL = int(os.environ.get("MARKET_START_CAPITAL", "5000000"))
 POPULARITY_EXP = 0.7                                 # orders per SKU ~ 1/rank^0.7: the top 100 SKUs draw about a quarter
 TASTE_SIZE, TASTE_SHARE = 4, 0.7                     # each buyer's hidden favourite categories, and the share of its orders
-STORAGE_PER_DAY = 0.01                               # goods in stock cost this share of their cost per day
+STORAGE_PER_DAY = 0.01                               # goods in stock cost this share of their cost per day (Round 3)
+AGE_ROUND = 4                                        # from this round stock ages: storage costs more and goods lose grades
+STORAGE_PER_DAY_AGED = float(os.environ.get("MARKET_STORAGE_PER_DAY", "0.12"))   # from AGE_ROUND: 0.5% an hour
+STORAGE_EVERY_AGED = 3600                            # and it is charged every hour, so a shop sees it as it goes
+OPEN_ROUND = 4                                       # from this round the market does not judge a shop's grade claim, and a customer's votes count from its first one
+RANKS_ROUND = 4                                      # from this round the board publishes ranks and names only
+SCORER = os.environ.get("MARKET_SCORER", "")         # an operator's Python file with score(db, rnd, shops, customers); see ranked_view
+CUSTOMERS_SHOWN = 100
+GOODS_HOLD_HOURS = float(os.environ.get("MARKET_GOODS_HOLD_HOURS", "48"))        # goods in stock lose one grade per this long (0: never)
 STORAGE_EVERY = 6 * 3600
 BANKRUPT_LINE = 500000                               # a shop below this balance may file for bankruptcy
 BANKRUPT_MAX = 2
@@ -119,6 +136,7 @@ FOOD_GRADES = [("A", 0.25, (0.8, 1.0)), ("B", 0.5, (0.45, 0.8)), ("C", 0.25, (0.
 GOODS_GRADES = [("A", 0.7, 0.03), ("B", 0.2, 0.12), ("C", 0.1, 0.35)]                          # defect chance
 COST_BAND = {"A": (0.55, 0.75), "B": (0.40, 0.60), "C": (0.25, 0.45)}                          # x list price
 USE_WITHIN = [0.1, 0.25, 0.5, 0.75]                  # food orders: hours of use, as a share of shelf life
+GRADE_WORTH = {g: (lo + hi) / 2 for g, (lo, hi) in COST_BAND.items()}   # what a grade is worth, as its supply cost band's middle
 BREAK_WINDOW = float(os.environ.get("MARKET_BREAK_WINDOW", str(6 * 3600)))   # a defective unit breaks within this long after the sale
 MAX_WARRANTY_HOURS = 72
 ECON_EVERY = float(os.environ.get("MARKET_ECON_EVERY", "30"))   # seconds between expiry and breakage sweeps
@@ -237,10 +255,48 @@ class Catalog:
 CAT: Catalog = None
 
 
+def coin(rnd=None):
+    """From CHAIN_ROUND money is tOKRW and nothing else: the market grants the starting capital to the shop's wallet,
+    stock is paid for with a transfer, and a refund is the shop's own transfer to its customer."""
+    rnd = (M.round() if M is not None else None) if rnd is None else rnd
+    return COIN and (rnd or 0) >= CHAIN_ROUND
+
+
+def aged_grade(grade, supplied_at, now, hold_hours=None):
+    """Goods lose one grade for every hold_hours they have sat in stock: A, then B, then C, where they stay."""
+    hold = GOODS_HOLD_HOURS if hold_hours is None else hold_hours
+    if hold <= 0 or grade not in "ABC":
+        return grade
+    return "ABC"[min(2, "ABC".index(grade) + int(max(0, now - supplied_at) / (hold * 3600)))]
+
+
+def ageing(rnd=None):
+    rnd = (M.round() if M is not None else None) if rnd is None else rnd
+    return (rnd or 0) >= AGE_ROUND and GOODS_HOLD_HOURS > 0
+
+
+def storage_rate(rnd=None):
+    rnd = (M.round() if M is not None else None) if rnd is None else rnd
+    return STORAGE_PER_DAY_AGED if (rnd or 0) >= AGE_ROUND else STORAGE_PER_DAY
+
+
+def storage_every(rnd=None):
+    rnd = (M.round() if M is not None else None) if rnd is None else rnd
+    return STORAGE_EVERY_AGED if (rnd or 0) >= AGE_ROUND else STORAGE_EVERY
+
+
+def stock_worth(u, now, rnd):
+    """What a unit in stock counts for on the board: its cost, marked down when its grade has fallen since supply."""
+    if u["kind"] == "food" or not ageing(rnd):
+        return u["cost"]
+    return int(u["cost"] * GRADE_WORTH[aged_grade(u["grade"], u["supplied_at"], now)] / GRADE_WORTH[u["grade"]])
+
+
 def grade_now(u, now=None):
-    """Food: the grade from the shelf life left (or 'expired'); goods: the grade drawn at supply."""
+    """Food: the grade from the shelf life left (or 'expired'). Goods: the grade drawn at supply, and from AGE_ROUND
+    one grade lower for every GOODS_HOLD_HOURS in stock."""
     if u["kind"] != "food":
-        return u["grade"]
+        return aged_grade(u["grade"], u["supplied_at"], now or time.time()) if ageing() else u["grade"]
     left = (u["expires_at"] - (now or time.time())) / (u["shelf_hours"] * 3600)
     return "A" if left >= FOOD_GRADES[0][2][0] else "B" if left >= FOOD_GRADES[1][2][0] else "C" if left > 0 else "expired"   # the supply bands
 
@@ -299,7 +355,7 @@ class Market:
         migrate = {"parties": {"owner": "text", "card": "text"},           # added after the first deployment
                    "orders": {"category": "text", "acceptable": "text", "use_within": "real",
                               "credits_only": "int default 0"},
-                   "wallets": {"injected": "int default 0", "bankruptcies": "int default 0", "fee_at": "real"},
+                   "wallets": {"injected": "int default 0", "bankruptcies": "int default 0", "fee_at": "real", "due": "int default 0"},
                    "settlements": {"unit": "text", "cost": "int", "grade": "text", "expires_at": "real",
                                    "claim": "text", "claim_honest": "int", "warranty_hours": "real",
                                    "value": "int", "use_within": "real", "break_at": "real",
@@ -369,11 +425,41 @@ class Market:
             self.db.execute("insert into wallets(shop, balance, start, created) values(?,?,?,?)",
                             (shop, START_CAPITAL, START_CAPITAL, time.time()))
             self.db.commit()
+            if coin(self.round()):                       # the starting capital goes to the shop's wallet, in tOKRW
+                grant(shop, START_CAPITAL, "start")
             w = self.db.execute("select * from wallets where shop=?", (shop,)).fetchone()
         return w
 
 
 M: Market = None
+GRANTS = None                                        # queue of (shop, credits, why): one sender, so one nonce at a time
+FILED, FILING_GAP = {}, 300                          # shop -> when it last filed for bankruptcy; seconds before it may again
+QUOTES = {}                                          # quote id -> a lot drawn for a shop, waiting for its payment
+
+
+def grant(shop, credits, why):
+    if GRANTS is not None:
+        GRANTS.put((shop, credits, why))
+
+
+def grant_loop():
+    """The market's wallet pays out starting capital and bankruptcy money, one transfer at a time."""
+    db = sqlite3.connect(M.path, timeout=30)
+    db.row_factory = sqlite3.Row
+    while True:
+        shop, credits, why = GRANTS.get()
+        try:
+            p = db.execute("select pubkey from parties where name=? and role='shop'", (shop,)).fetchone()
+            if p is None:
+                continue
+            tx = maroo.pay(M.key, p["pubkey"], credits * maroo.CREDIT_WEI)
+            GRANTED.append({"shop": shop, "credits": credits, "why": why, "tx_hash": tx})
+        except Exception as e:                       # the market's wallet is empty or the chain is away: say so, keep going
+            print(f"grant to {shop} ({credits} credits, {why}) failed: {type(e).__name__}: {str(e)[:160]}", flush=True)
+            GRANTED.append({"shop": shop, "credits": credits, "why": why, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+
+
+GRANTED = []                                         # done grants, written to the ledger by the event loop (econ_sweep)
 
 
 class BadBody(ValueError):
@@ -565,7 +651,8 @@ async def do_join(b, ip, owner):
     if owner and not (old and old["owner"] == owner):
         n = M.db.execute("select count(*) from parties where owner=?", (owner,)).fetchone()[0]
         if n >= MAX_PER_OWNER:
-            return err(403, f"one GitHub account may own at most {MAX_PER_OWNER} agents")
+            have = ", ".join(r["name"] for r in M.db.execute("select name from parties where owner=? limit 6", (owner,)))
+            return err(403, f"one GitHub account may own at most {MAX_PER_OWNER} agents; this account has {have}")
     if old:
         if owner and old["owner"] != owner:
             M.db.execute("update parties set owner=? where token=?", (owner, old["token"]))
@@ -654,15 +741,21 @@ async def agents(req: Request):
 
 async def probe_loop():
     while True:                                      # probe first, so a restart does not leave every shop "gone"
-        rows = M.db.execute("select token, url from parties where role='shop'").fetchall()
+        rows = M.db.execute("select token, url, alive from parties where role='shop'").fetchall()
         gate = asyncio.Semaphore(16)
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as c:
             async def probe(r):
                 async with gate:
-                    with contextlib.suppress(Exception):
-                        if not await url_problem(r["url"]):
+                    problem = None
+                    try:
+                        problem = await url_problem(r["url"])
+                        if not problem:
                             await read_card(c, r["url"])
                             M.db.execute("update parties set alive=? where token=?", (time.time(), r["token"]))
+                    except Exception as e:
+                        problem = type(e).__name__
+                    if problem and time.time() - (r["alive"] or 0) < ALIVE_FOR:   # only shops that were up: say why
+                        print(f"probe missed {r['url']}: {problem}", flush=True)
             await asyncio.gather(*(probe(r) for r in rows))
         M.db.commit()
         await asyncio.sleep(PROBE_EVERY)
@@ -714,7 +807,7 @@ async def new_order(req: Request):
 
 def persona_left(name, now):
     spent = M.db.execute("select coalesce(sum(s.price), 0) from settlements s join orders o on o.id=s.order_id"
-                         " where s.buyer=? and s.ts>? and o.credits_only=1", (name, now - 86400)).fetchone()[0]
+                         " where s.buyer=? and s.ts>?", (name, now - 86400)).fetchone()[0]
     return PERSONA_DAILY - spent
 
 
@@ -723,12 +816,20 @@ async def customer(req: Request):
     p = M.party(req, "buyer")
     if p is None or p["label"] != PERSONA:
         return err(401, "customers only")
-    return JSONResponse({"name": p["name"], "credits_left": persona_left(p["name"], time.time()), "daily": PERSONA_DAILY})
+    names = {r["url"]: r["name"] for r in M.db.execute("select url, name from shop_urls")}
+    broke = [{"order": s["order_id"], "shop": names.get(s["shop_url"], s["shop_url"]), "item": s["item"],
+              "name": (CAT.sku.get(s["item"]) or {}).get("name"), "paid": s["price"], "bought_at": int(s["ts"]),
+              "hours_until_it_broke": round((s["break_at"] - s["ts"]) / 3600, 1), "warranty_hours": s["warranty_hours"]}
+             for s in M.db.execute("select * from settlements where buyer=? and broke=1 order by ts desc limit 20", (p["name"],))]
+    return JSONResponse({"name": p["name"], "credits_left": persona_left(p["name"], time.time()), "daily": PERSONA_DAILY,
+                         "wallet": p["pubkey"], "broke": broke})
 
 
 async def persona_order(p, b, now):
-    """A customer's own order: the SKU it chose and what it is willing to pay, out of its daily credits. The market
-    pays the shop in credits when it settles (customers hold no tOKRW); every other check of /api/settle applies."""
+    """A customer's own order: the SKU it chose and what it is willing to pay, inside its daily limit. From
+    CHAIN_ROUND it is paid like any buyer's deal, in tOKRW from the customer's wallet, and the market checks the
+    transfers (MARKET_PERSONA_ON_CHAIN=0 has the market pay the shop in credits instead, for a market with no chain).
+    Every other check of /api/settle applies."""
     info = CAT.sku.get(str(b.get("sku", "")))
     budget = b.get("budget")
     if info is None:
@@ -738,12 +839,13 @@ async def persona_order(p, b, now):
     left = persona_left(p["name"], now)
     if budget > left:
         return err(402, f"this customer has {left} credits left for today")
-    M.db.execute("update orders set done=1 where buyer=? and done=0 and credits_only=1", (p["name"],))
+    M.db.execute("update orders set done=1 where buyer=? and done=0", (p["name"],))
+    credits_only = 0 if PERSONA_ON_CHAIN and M.round() >= CHAIN_ROUND else 1
     oid = "o-" + secrets.token_hex(6)
     M.db.execute("insert into orders(id, buyer, item, budget, expires, nonce, issued, round, done, category,"
-                 " acceptable, use_within, credits_only) values(?,?,?,?,?,?,?,?,0,?,?,?,1)",
+                 " acceptable, use_within, credits_only) values(?,?,?,?,?,?,?,?,0,?,?,?,?)",
                  (oid, p["name"], info["sku"], budget, now + ORDER_TTL, secrets.token_hex(8), now, M.round(),
-                  info["category"], json.dumps([info["sku"]]), None))
+                  info["category"], json.dumps([info["sku"]]), None, credits_only))
     M.db.commit()
     o = M.db.execute("select * from orders where id=?", (oid,)).fetchone()
     pub = {k: order_json(o)[k] for k in ("order", "buyer", "expires", "round")}
@@ -884,18 +986,24 @@ async def settle(req: Request):
         offered = grade_now(u, co["iat"]) if type(co.get("iat")) in (int, float) else grade   # food ages during checkout
         info = CAT.sku.get(u["sku"], {})
         served = u["kind"] != "food" or o["use_within"] is None or (u["expires_at"] - now) / 3600 >= o["use_within"]
+        defect = bool(u["defect"])
+        judged = o["round"] < OPEN_ROUND                 # before OPEN_ROUND the market said whether the claimed grade was true
+        if u["kind"] != "food" and grade != u["grade"] and not defect:   # a grade lost in stock brings that grade's defect chance
+            was, is_now = (next(g[2] for g in GOODS_GRADES if g[0] == x) for x in (u["grade"], grade))
+            defect = random.random() < (is_now - was) / (1 - was)
         extra = {"unit": u["id"], "cost": u["cost"], "grade": grade, "expires_at": u["expires_at"],
-                 "claim": claim, "claim_honest": None if claim is None else int(claim in (grade, offered)),
+                 "claim": claim, "claim_honest": None if claim is None or not judged else int(claim in (grade, offered)),
                  "warranty_hours": warranty, "value": info.get("list_price", 0) if served else 0,
                  "use_within": o["use_within"],
-                 "break_at": now + random.uniform(0, BREAK_WINDOW) if u["defect"] else None}
+                 "break_at": now + random.uniform(0, BREAK_WINDOW) if defect else None}
         M.db.execute("update units set status='sold', order_id=?, sold_at=? where id=?", (o["id"], now, u["id"]))
         M.wallet(p["name"])
         M.db.execute("update wallets set balance=balance+? where shop=?",
                      (price - fee["shop"] if on_chain else price, p["name"]))
         reveal = {"unit": u["id"], "sku": u["sku"], "name": info.get("name"), "grade": grade,
-                  "expires_at": u["expires_at"], "claim": claim, "claim_honest": None if claim is None else claim in (grade, offered),
-                  "warranty_hours": warranty}
+                  "expires_at": u["expires_at"], "claim": claim, "warranty_hours": warranty}
+        if judged and claim is not None:
+            reveal["claim_honest"] = claim in (grade, offered)
     cols = {"order_id": o["id"], "ts": now, "round": o["round"], "buyer": o["buyer"], "shop_url": norm_url(p["url"]),
             "item": co.get("item") if econ else o["item"], "price": price, "task": co["task"], "checkout_hash": chash,
             **extra}
@@ -918,7 +1026,10 @@ async def market_key(req: Request):
 
 
 async def chain_info(req: Request):
-    return JSONResponse(dict(maroo.info(), from_round=CHAIN_ROUND, market_address=M.pubkey))
+    paid = M.db.execute("select count(*) n, coalesce(sum(price), 0) credits from settlements where round=? and tx_hash is not null",
+                        (M.round() or 0,)).fetchone()
+    return JSONResponse(dict(maroo.info(), from_round=CHAIN_ROUND, market_address=M.pubkey, customers_on_chain=PERSONA_ON_CHAIN,
+                             paid_this_round={"deals": paid["n"], "credits": paid["credits"]}))
 
 
 # --- economy (Round 3): catalog, supply, inventory, expiry, breakage
@@ -999,14 +1110,26 @@ def unit_view(u):
             "expires_at": u["expires_at"], "grade": grade_now(u), "cert": json.loads(u["cert"])}
 
 
+def quote_view(qid, q, now):
+    total = q["goods"] + q["storage"] + q["fees"]
+    return {"quote": qid, "total": total, "goods": q["goods"], "storage": q["storage"], "forum_fees": q["fees"],
+            "expires_in": int(q["expires"] - now),
+            "pay": {"to": M.pubkey, "wei": str(total * maroo.CREDIT_WEI), "data": "0x" + hashlib.sha256(qid.encode()).hexdigest()},
+            "then": "send that transfer from your shop wallet, then POST /api/supply {quote, tx_hash}",
+            "units": [{k: v for k, v in unit_view(u).items() if k != "cert"} for u in q["units"]]}
+
+
 async def supply(req: Request):
-    """POST {sku, qty}: buy stock from the market. Grades and costs are drawn per unit; the total leaves the balance."""
+    """POST {sku, qty}: buy stock from the market. Grades and costs are drawn per unit. In coin the answer is a quote
+    (402) with the transfer to send; POST {quote, tx_hash} then hands the lot over. Before, the total left the balance."""
     p = M.party(req, "shop")
     if p is None:
         return err(401, "join as a shop first")
     if M.round() < ECON_ROUND:
         return err(403, f"supply opens in Round {ECON_ROUND}")
     b = await body_json(req)
+    if b.get("quote"):
+        return await supply_paid(p, b)
     info = CAT.sku.get(str(b.get("sku", "")))
     qty = b.get("qty")
     if info is None:
@@ -1019,6 +1142,10 @@ async def supply(req: Request):
         return JSONResponse({"error": f"supply is closed; the next restock window opens in {int(opens - now)} s",
                              "wait": round(opens - now, 1), "opens_at": int(opens), "closes_at": int(closes)},
                             status_code=429)
+    if coin():                                       # asked again for the same lot: its quote still stands
+        for qid, q in QUOTES.items():
+            if q["shop"] == p["name"] and q["sku"] == info["sku"] and len(q["units"]) == qty and q["expires"] > now + 5:
+                return JSONResponse(quote_view(qid, q, now), status_code=402)
     if now - SUPPLY_LAST.get(p["name"], 0) < SUPPLY_GAP:
         return JSONResponse({"wait": round(SUPPLY_GAP - (now - SUPPLY_LAST[p["name"]]), 1)}, status_code=429)
     recent = M.db.execute("select count(*) from units where supplied_at>=? and sku=?",
@@ -1026,18 +1153,63 @@ async def supply(req: Request):
     units = [draw_unit(p["name"], info, now, surge_factor(recent + i)) for i in range(qty)]
     total = sum(u["cost"] for u in units)
     w = M.wallet(p["name"])
+    if coin():                                       # the lot is set aside; it is the shop's once the transfer is seen
+        SUPPLY_LAST[p["name"]] = now
+        storage, fees = storage_due(w, now), w["due"] or 0
+        carries = not any(q["shop"] == p["name"] and q["expires"] > now and q["carries"] for q in QUOTES.values())
+        if not carries:                              # another open quote of this shop already carries its dues
+            storage, fees = 0, 0
+        qid = "q-" + secrets.token_hex(8)
+        QUOTES[qid] = {"shop": p["name"], "sku": info["sku"], "units": units, "goods": total, "storage": storage, "fees": fees,
+                       "carries": carries, "expires": now + QUOTE_TTL, "surge": surge_factor(recent + qty - 1)}
+        return JSONResponse(quote_view(qid, QUOTES[qid], now), status_code=402)
     if w["balance"] < total:
         return JSONResponse({"error": f"this lot costs {total}, the balance is {w['balance']}", "balance": w["balance"],
                              "total": total}, status_code=402)
     SUPPLY_LAST[p["name"]] = now
+    return deliver(p["name"], info["sku"], units, total, 0, surge_factor(recent + qty - 1), w, now)
+
+
+def storage_due(w, now):
+    """In coin: the storage share on the goods a shop holds, since it last paid for a lot."""
+    held = M.db.execute("select coalesce(sum(cost), 0) from units where shop=? and status='stock' and kind='goods'",
+                        (w["shop"],)).fetchone()[0]
+    return int(held * storage_rate() * (now - (w["fee_at"] or w["created"])) / 86400)
+
+
+def deliver(shop, sku, units, total, storage, surge, w, now, tx_hash=None, fees=0, carries=False):
     for u in units:
         M.db.execute(f"insert into units({', '.join(u)}) values({', '.join('?' * len(u))})", list(u.values()))
-    M.db.execute("update wallets set balance=balance-? where shop=?", (total, p["name"]))
+    M.db.execute("update wallets set balance=balance-?, fee_at=?, due=max(0, due-?) where shop=?",
+                 (total + storage + fees, now if carries else w["fee_at"], fees, shop))   # storage is paid up to now
     M.db.commit()
-    M.append("supply", {"shop": p["name"], "sku": info["sku"], "qty": qty, "total": total,
-                        "units": [u["id"] for u in units]})
-    return JSONResponse({"balance": w["balance"] - total, "total": total, "surge": surge_factor(recent + qty - 1),
+    entry = {"shop": shop, "sku": sku, "qty": len(units), "total": total, "units": [u["id"] for u in units]}
+    if tx_hash:
+        entry.update(storage=storage, fees=fees, tx_hash=tx_hash, tx_url=maroo.tx_url(tx_hash))
+    M.append("supply", entry)
+    return JSONResponse({"balance": None if coin() else w["balance"] - total, "total": total + storage + fees, "surge": surge,
                          "units": [unit_view(u) for u in units]})
+
+
+async def supply_paid(p, b):
+    """POST {quote, tx_hash}: the transfer for a quoted lot. The lot is handed over when the chain shows the payment."""
+    q = QUOTES.get(str(b.get("quote")))
+    if q is None or q["shop"] != p["name"]:
+        return err(404, "no such quote, or it has expired: ask for the lot again")
+    wei, digest = (q["goods"] + q["storage"] + q["fees"]) * maroo.CREDIT_WEI, hashlib.sha256(str(b["quote"]).encode()).digest()
+    try:
+        problem = await maroo.payment_problem(b.get("tx_hash"), p["pubkey"], M.pubkey, wei, digest)
+    except (httpx.HTTPError, RuntimeError, ValueError) as e:
+        return err(503, f"the chain cannot be read right now ({type(e).__name__}); send the same quote and tx_hash again")
+    if problem:
+        return JSONResponse({"error": f"that transfer does not pay this quote: {problem}", "pay": {"to": M.pubkey, "wei": str(wei),
+                             "data": "0x" + digest.hex()}}, status_code=402)
+    if QUOTES.pop(str(b["quote"]), None) is None:    # two calls with one payment: the lot goes out once
+        return err(409, "this quote was already paid for")
+    now = time.time()
+    for u in q["units"]:                             # the clock of a unit starts when it is the shop's
+        u["supplied_at"] = now
+    return deliver(p["name"], q["sku"], q["units"], q["goods"], q["storage"], q["surge"], M.wallet(p["name"]), now, b["tx_hash"], q["fees"], q["carries"])
 
 
 async def bankruptcy(req: Request):
@@ -1048,17 +1220,30 @@ async def bankruptcy(req: Request):
         return err(401, "join as a shop first")
     if M.round() < ECON_ROUND:
         return err(403, f"bankruptcy opens in Round {ECON_ROUND}")
-    w = M.wallet(p["name"])
-    if w["balance"] >= BANKRUPT_LINE:
-        return err(409, f"the balance is {w['balance']}; filing needs less than {BANKRUPT_LINE}")
+    have = M.wallet(p["name"])["balance"]
+    if coin():                                       # what counts is what the wallet holds
+        if time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # the last filing's money may still be on its way
+            return err(409, f"this shop filed less than {FILING_GAP} s ago; its money is on the way")
+        try:
+            have = (await maroo.balance_async(p["pubkey"])) // maroo.CREDIT_WEI
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            return err(503, "the chain cannot be read right now; try again")
+        if time.time() - FILED.get(p["name"], 0) < FILING_GAP:   # another filing got in while the chain was read
+            return err(409, f"this shop filed less than {FILING_GAP} s ago; its money is on the way")
+    w = M.wallet(p["name"])                          # read after the wait: nothing below waits
+    if have >= BANKRUPT_LINE:
+        return err(409, f"the balance is {have}; filing needs less than {BANKRUPT_LINE}")
     if w["bankruptcies"] >= BANKRUPT_MAX:
         return err(409, f"this shop has already filed {BANKRUPT_MAX} times")
     seized = M.db.execute("select id, cost from units where shop=? and status='stock'", (p["name"],)).fetchall()
     M.db.execute("update units set status='seized' where shop=? and status='stock'", (p["name"],))
-    given = w["start"] - w["balance"]
+    given = w["start"] - (have if coin() else w["balance"])
     M.db.execute("update wallets set balance=start, injected=injected+?, bankruptcies=bankruptcies+1 where shop=?",
                  (given, p["name"]))
     M.db.commit()
+    if coin():
+        FILED[p["name"]] = time.time()
+        grant(p["name"], given, "bankruptcy")
     M.append("bankrupt", {"shop": p["name"], "given": given, "seized_units": len(seized),
                           "seized_cost": sum(u["cost"] for u in seized), "filing": w["bankruptcies"] + 1})
     return JSONResponse({"balance": w["start"], "given": given, "seized_units": len(seized),
@@ -1068,6 +1253,19 @@ async def bankruptcy(req: Request):
 def restock_view(now):
     opens, closes = supply_window(now)
     return {"open": now >= opens, "opens_at": int(opens), "closes_at": int(closes)}
+
+
+VILLAGE_FILE = os.environ.get("MARKET_VILLAGE", "")   # the customers' supervisor writes it (house/customer.py: village.json)
+
+
+async def api_village(req: Request):
+    """Public: the day in the customers' village and who is in town. Empty on a market without village customers."""
+    try:
+        v = json.loads(Path(VILLAGE_FILE).read_text(encoding="utf-8")) if VILLAGE_FILE else {}
+    except (OSError, ValueError):
+        v = {}
+    keep = ("day", "weekday", "part", "weather", "market_day", "payday", "households", "wanting_to_come", "in_town")
+    return JSONResponse({k: v[k] for k in keep if k in v})
 
 
 async def api_restock(req: Request):
@@ -1088,10 +1286,20 @@ async def inventory(req: Request):
     w = M.wallet(p["name"]) if M.round() >= ECON_ROUND else None
     rows = M.db.execute("select * from units where shop=? and status='stock' order by coalesce(expires_at, supplied_at)",
                         (p["name"],)).fetchall()
-    return JSONResponse({"round": M.round(), "balance": w["balance"] if w else None, "start": w["start"] if w else None,
+    money = {"balance": w["balance"] if w else None}
+    if coin():                                       # the shop's money is its wallet; the market does not keep it
+        try:
+            wei = await maroo.balance_async(p["pubkey"])
+            money = {"balance": wei // maroo.CREDIT_WEI, "wallet": p["pubkey"], "tokrw": wei / 10 ** 18,
+                     "storage_due_with_next_lot": storage_due(w, time.time())}
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            money = {"balance": None, "wallet": p["pubkey"], "note": "the chain cannot be read right now"}
+    return JSONResponse({"round": M.round(), **money, "start": w["start"] if w else None,
                          "injected": w["injected"] if w else None, "bankruptcies": w["bankruptcies"] if w else None,
                          "bankruptcies_left": BANKRUPT_MAX - w["bankruptcies"] if w else None,
-                         "bankrupt_line": BANKRUPT_LINE, "storage_per_day": STORAGE_PER_DAY,
+                         "bankrupt_line": BANKRUPT_LINE, "storage_per_day": storage_rate(),
+                         "storage_charged_every_seconds": storage_every(),
+                         "goods_lose_a_grade_every_hours": GOODS_HOLD_HOURS if ageing() else None,
                          "restock": restock_view(time.time()), "surge": surge_list(time.time()),
                          "next_dislike_fee": dislike_fee(M.db, p["owner"] or f"shop:{p['name']}", time.time()),
                          "dislike_power_unit": power_unit(M.db, p),
@@ -1099,14 +1307,15 @@ async def inventory(req: Request):
 
 
 def storage_fees(now):
-    """Every STORAGE_EVERY, each shop pays STORAGE_PER_DAY of the cost of the goods it holds, pro rata."""
+    """Every storage_every(), each shop pays the round's storage share of the cost of the goods it holds, pro rata."""
+    every = storage_every()
     for w in M.db.execute("select * from wallets").fetchall():
         last = w["fee_at"] or w["created"]
-        if now - last < STORAGE_EVERY:
+        if now - last < every:
             continue
         held = M.db.execute("select coalesce(sum(cost), 0) from units where shop=? and status='stock' and kind='goods'",
                             (w["shop"],)).fetchone()[0]
-        fee = int(held * STORAGE_PER_DAY * (now - last) / 86400)
+        fee = int(held * storage_rate() * (now - last) / 86400)
         M.db.execute("update wallets set balance=balance-?, fee_at=? where shop=?", (fee, now, w["shop"]))
         M.db.commit()
         if fee:
@@ -1116,7 +1325,13 @@ def storage_fees(now):
 def econ_sweep():
     """Write off stale food, break defective goods, refund under warranty, charge storage."""
     now = time.time()
-    storage_fees(now)
+    while GRANTED:
+        g = GRANTED.pop(0)
+        M.append("grant", dict(g, tx_url=maroo.tx_url(g["tx_hash"])) if g.get("tx_hash") else g)
+    for qid in [k for k, q in QUOTES.items() if q["expires"] + QUOTE_KEEP < now]:   # a late payment still finds its lot
+        QUOTES.pop(qid, None)
+    if not coin():                                   # in coin the storage share is added to the next lot's price
+        storage_fees(now)
     gone = M.db.execute("select * from units where status='stock' and expires_at is not null and expires_at<=?",
                         (now,)).fetchall()
     by_shop = {}
@@ -1129,7 +1344,8 @@ def econ_sweep():
                             "cost": sum(u["cost"] for u in us)})
     for s in M.db.execute("select * from settlements where break_at is not null and break_at<=? and broke=0",
                           (now,)).fetchall():
-        refund = bool(s["warranty_hours"]) and s["break_at"] - s["ts"] <= s["warranty_hours"] * 3600
+        refund = bool(s["warranty_hours"]) and s["break_at"] - s["ts"] <= s["warranty_hours"] * 3600 and not coin()
+        # in coin nobody refunds for the shop: the customer comes back and asks, and the shop pays it back, or does not
         shop = M.shop_by_url(s["shop_url"])
         M.db.execute("update settlements set broke=1, value=0, refunded=? where order_id=?", (int(refund), s["order_id"]))
         if refund and shop:
@@ -1276,6 +1492,18 @@ def settled_count(db, name, role):
 VOTERS, NOT_YET = set(), {}   # settled deals never go down: who qualified stays qualified, who did not is asked again soon
 
 
+def open_voter(db, name, role):
+    """From OPEN_ROUND a customer's votes count from its first. The round is read from db: the board is built outside
+    the server process."""
+    if role != "buyer":
+        return False
+    try:
+        return bool(db.execute("select 1 from parties p, meta m where p.name=? and p.role='buyer' and p.label=? and m.k='round'"
+                               " and cast(m.v as int)>=?", (name, PERSONA, OPEN_ROUND)).fetchone())
+    except sqlite3.OperationalError:                 # a database without the market's meta table
+        return False
+
+
 def can_vote(db, name, role):
     key = (role, name)
     if key in VOTERS:
@@ -1283,7 +1511,7 @@ def can_vote(db, name, role):
     now = time.time()
     if now < NOT_YET.get(key, 0):
         return False
-    if settled_count(db, name, role) >= VOTE_MIN_DEALS:
+    if settled_count(db, name, role) >= VOTE_MIN_DEALS or open_voter(db, name, role):
         VOTERS.add(key)
         return True
     NOT_YET[key] = now + 10
@@ -1338,7 +1566,7 @@ async def forum_vote(req: Request):
     account = p["owner"] or voter
     same_owner = bool(p["owner"]) and p["owner"] == post["owner"]
     priced = (not same_owner and value < 0 and post["role"] == "buyer" and not post["hidden"] and post["round"] == M.round()
-              and M.round() >= ECON_ROUND)
+              and M.round() >= ECON_ROUND and not (M.round() >= OPEN_ROUND and p["label"] == PERSONA))
     if power and not priced:
         return err(400, "more than one vote works only on a visible buyer post of this round, from another account")
     if power and not counts:
@@ -1358,10 +1586,14 @@ async def forum_vote(req: Request):
         fee = open_fee + power_fee
         if fee:
             w = paying_wallet(M.db, p)
-            if w is None or w["balance"] < fee:
+            if w is None or (w["balance"] < fee and not coin()):
                 return JSONResponse({"error": f"this dislike costs {fee}, paid from your shop's cash", "fee": fee,
                                      "balance": w["balance"] if w else None}, status_code=402)
-            M.db.execute("update wallets set balance=balance-? where shop=?", (fee, w["shop"]))
+            if coin():                               # no book to take it from: it is added to the price of the shop's next lot
+                M.db.execute("update wallets set due=due+? where shop=?", (fee, w["shop"]))
+                extra["fee_added_to_next_lot"] = True
+            else:
+                M.db.execute("update wallets set balance=balance-? where shop=?", (fee, w["shop"]))
         if opens:
             M.db.execute("insert into dislike_fees values(?,?,?,?)", (now, account, post["author"], open_fee))
         if power_fee:
@@ -1369,7 +1601,7 @@ async def forum_vote(req: Request):
                          " do update set power=excluded.power, paid=paid+excluded.paid, ts=excluded.ts",
                          (post["round"], account, post["author"], power, power_fee, now))
             held = power
-        extra = {"votes_on_author": held, "power_fee": power_fee, "next_vote_fee": power_unit(M.db, p) * ((held) ** 2 - (held - 1) ** 2)}
+        extra = {**extra, "votes_on_author": held, "power_fee": power_fee, "next_vote_fee": power_unit(M.db, p) * ((held) ** 2 - (held - 1) ** 2)}
     M.db.execute("insert or replace into votes values(?,?,?,?,?)", (post["id"], voter, p["owner"], -1 if value < 0 else 1, now))
     M.db.commit()
     return JSONResponse({"ok": True, "counted": counts, "fee": fee or 0, "next_dislike_fee": dislike_fee(M.db, account, now), **extra})
@@ -1698,7 +1930,43 @@ async def checkpoint_loop():
 
 async def api_stats(req: Request):
     reveal = admin_ok(req)
-    return JSONResponse(await snapshot(("stats", reveal), lambda: stats(reveal=reveal)))
+    return JSONResponse(await snapshot(("stats", reveal), lambda: in_view_process(stats, reveal)))
+
+
+# Board and stats are pure reads, but heavy: computed in a thread they held the GIL for seconds at a time, and every
+# row the event loop read waited for it (event loop stalls, missed shop probes). Their own process has its own GIL.
+VIEW_PROCS = [None]
+VIEW_LOCK = threading.Lock()
+VIEW_TIMEOUT = 300         # seconds; a hung view process must not hold SNAP_GATE (and the WAL truncation) forever
+
+
+def view_init(path, catalog_csv, rules):
+    """Initializer of the view process: reader() needs only the path, item_label() the catalog. It never writes."""
+    global M, CAT
+    M = types.SimpleNamespace(path=path)
+    CAT = Catalog(catalog_csv, rules)
+
+
+def in_view_process(fn, *args):
+    """fn(*args) in the view process. A broken or hung process is replaced, and the call tried once more."""
+    for attempt in range(2):
+        with VIEW_LOCK:
+            if VIEW_PROCS[0] is None:
+                VIEW_PROCS[0] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                                                    initializer=view_init, initargs=(M.path, *CAT_ARGS))
+            procs = VIEW_PROCS[0]
+        try:
+            return procs.submit(fn, *args).result(timeout=VIEW_TIMEOUT)
+        except (BrokenProcessPool, FutureTimeout) as e:
+            print(f"view process {type(e).__name__} in {fn.__name__}; starting a new one", flush=True)
+            with VIEW_LOCK:
+                if VIEW_PROCS[0] is procs:
+                    VIEW_PROCS[0] = None
+            for proc in list((getattr(procs, "_processes", None) or {}).values()):   # a hung child is not stopped by shutdown
+                proc.terminate()
+            procs.shutdown(wait=False, cancel_futures=True)
+            if attempt:
+                raise
 
 
 READ_POOL = ThreadPoolExecutor(4, thread_name_prefix="read")    # many-row reads stay off the event loop
@@ -1762,6 +2030,10 @@ def page(name):
     return serve
 
 
+async def site_css(req: Request):
+    return Response(hosted("site.css"), media_type="text/css; charset=utf-8", headers={"cache-control": "max-age=300"})
+
+
 dashboard = page("dashboard.html")
 landing_page = page("landing.html")
 
@@ -1780,6 +2052,10 @@ async def landing(req: Request):
 
 async def install(req: Request):
     return Response(hosted("install.sh"), media_type="text/plain; charset=utf-8")
+
+
+async def round4_md(req: Request):
+    return Response(hosted("ROUND4.md"), media_type="text/markdown; charset=utf-8")
 
 
 async def agent_md(req: Request):
@@ -1864,7 +2140,7 @@ def board(rnd):
     players = econ_board(db, rnd, shops, buyers, shop_of, stars_of) if rnd >= ECON_ROUND else []
     shops.sort(key=lambda s: (-s["deals"], -(s["stars"] or 0)))
     buyers.sort(key=lambda b: (-b["deals"], b["paid"] if b["paid"] is not None else 9))
-    return {"round": rnd, "current": int(db.execute("select v from meta where k='round'").fetchone()["v"]),
+    full = {"round": rnd, "current": int(db.execute("select v from meta where k='round'").fetchone()["v"]),
             "shops": shops, "buyers": buyers, "players": players,
             "reviews": [dict(rev(x), shop=shop_of[here(x["shop_url"])]["name"] if here(x["shop_url"]) in shop_of else x["shop_url"])
                         for x in reversed(revs[-BOARD_REVIEWS:])],
@@ -1874,6 +2150,64 @@ def board(rnd):
                        "rejected": rejected,
                        "walkaways": sum(1 for r in rows if r["receipt"] is None)},
             "github": bool(GH_ID)}
+    return ranked_view(db, rnd, full, [p for p in parties if p["label"] == PERSONA], last_order) if rnd >= RANKS_ROUND else full
+
+
+_scorer = []
+
+
+def scorer():
+    """The operator's ranking function, loaded once: a Python file named by MARKET_SCORER."""
+    if not _scorer:
+        mod = None
+        if SCORER and Path(SCORER).exists():
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("market_scorer", SCORER)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        _scorer.append(mod)
+    return _scorer[0]
+
+
+def ranked_view(db, rnd, full, personas, last_order):
+    """From RANKS_ROUND the board shows ranks and names, nothing else: shops, and the village's customers.
+    The order comes from score(db, rnd, shops, customers) in the operator's file (MARKET_SCORER), which returns
+    {"shops": {name: number}, "customers": {name: number}}, higher first. Without one, shops rank by credits earned
+    and customers by what their shopping was worth to them beyond what they paid."""
+    spent = {}
+    for r in db.execute("select buyer, count(*) n, sum(coalesce(value, 0) - price + case when refunded then price else 0 end) gain"
+                        " from settlements where round=? group by buyer", (rnd,)):
+        spent[r["buyer"]] = (r["n"], r["gain"] or 0)
+    customers = [{"name": p["name"], "deals": spent.get(p["name"], (0, 0))[0], "gain": spent.get(p["name"], (0, 0))[1],
+                  "joined": round(p["joined"])} for p in personas]
+    shops = full["shops"]
+    scores = None
+    try:
+        mod = scorer()
+        scores = mod.score(db, rnd, shops, customers) if mod else None
+    except Exception as e:                           # a broken scorer must not take the board down
+        print(f"scorer: {type(e).__name__}: {e}", flush=True)
+    if not isinstance(scores, dict):
+        scores = {"shops": {s["name"]: s.get("profit", 0) for s in shops if s.get("deals") or s.get("profit")},
+                  "customers": {c["name"]: c["gain"] for c in customers if c["deals"]}}
+    now = time.time()
+
+    def ranked(rows, got, keep):
+        got = {k: v for k, v in (got or {}).items() if isinstance(v, (int, float))}
+        order = sorted((r for r in rows if r["name"] in got), key=lambda r: (-got[r["name"]], r["joined"]))
+        rest = sorted((r for r in rows if r["name"] not in got), key=lambda r: r["joined"])
+        return [dict({k: r.get(k) for k in keep}, rank=i + 1) for i, r in enumerate(order)] \
+            + [dict({k: r.get(k) for k in keep}, rank=None) for r in rest]
+
+    for c in customers:
+        c["alive"] = now - last_order.get(c["name"], 0) < 1800
+    for s in shops:
+        s["student"] = bool(s["owner"]) and s["owner"]["login"].lower() in STUDENTS
+    return {"round": rnd, "current": full["current"], "ranks_only": True,
+            "shops": ranked(shops, scores.get("shops"), ("name", "owner", "house", "vooy", "joined", "alive", "card", "student")),
+            "customers": [c for c in ranked(customers, scores.get("customers"), ("name", "alive")) if c["rank"]][:CUSTOMERS_SHOWN],
+            "buyers": [{k: b.get(k) for k in ("name", "owner", "house", "vooy", "joined", "alive")} for b in full["buyers"]],   # names only
+            "players": [], "reviews": full["reviews"], "totals": full["totals"], "github": full["github"]}
 
 
 def percentile(rows, key):
@@ -1891,6 +2225,11 @@ def econ_board(db, rnd, shops, buyers, shop_of, stars_of):
     by_shop, by_buyer = {}, {}
     cm = canon_urls(db)
     held = {r[0]: (r[1], r[2]) for r in db.execute("select shop, count(*), sum(cost) from units where status='stock' group by shop")}
+    if ageing(rnd):                                  # stock counts at what its grade is worth now, not at what it cost
+        held, now = {}, time.time()
+        for u in db.execute("select shop, kind, grade, cost, supplied_at from units where status='stock'"):
+            n, worth = held.get(u["shop"], (0, 0))
+            held[u["shop"]] = (n + 1, worth + stock_worth(u, now, rnd))
     for s in sets:
         by_shop.setdefault(cm.get(s["shop_url"], s["shop_url"]), []).append(s)
         by_buyer.setdefault(s["buyer"], []).append(s)
@@ -1966,7 +2305,7 @@ def econ_board(db, rnd, shops, buyers, shop_of, stars_of):
 async def api_board(req: Request):
     rnd = req.query_params.get("round", "")
     rnd = int(rnd) if rnd.isascii() and rnd.isdigit() and int(rnd) <= M.round() else M.round()
-    return JSONResponse(await snapshot(("board", rnd), lambda: board(rnd)))
+    return JSONResponse(await snapshot(("board", rnd), lambda: in_view_process(board, rnd)))
 
 
 async def api_shop_reviews(req: Request):
@@ -2116,32 +2455,44 @@ async def admin_label(req: Request):
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
+    global GRANTS
+    GRANTS = queue.Queue()
+    threading.Thread(target=grant_loop, daemon=True).start()
     tasks = [asyncio.create_task(probe_loop()), asyncio.create_task(refresh_loop()), asyncio.create_task(econ_loop()),
              asyncio.create_task(checkpoint_loop()), asyncio.create_task(beat_loop())]
     threading.Thread(target=loop_watchdog, args=(threading.get_ident(),), daemon=True).start()
     yield
     for t in tasks:
         t.cancel()
+    with VIEW_LOCK:
+        procs, VIEW_PROCS[0] = VIEW_PROCS[0], None
+    if procs is not None:
+        procs.shutdown(wait=False, cancel_futures=True)
 
 
 def entity_settings():
     return {"MARKET_FEE_BPS": maroo.MARKET_FEE_BPS, "NETWORK_FEE_CREDITS": maroo.NETWORK_FEE_CREDITS,
             "ORDER_GAP": ORDER_GAP, "ORDER_TTL": ORDER_TTL, "MAX_WARRANTY_HOURS": MAX_WARRANTY_HOURS,
-            "STORAGE_PER_DAY": STORAGE_PER_DAY, "SUPPLY_OPEN": SUPPLY_OPEN, "SUPPLY_MAX": SUPPLY_MAX,
+            "STORAGE_PER_DAY": storage_rate(), "STORAGE_EVERY": storage_every(), "RANKS_ONLY": (M.round() or 0) >= RANKS_ROUND, "COIN": coin(),
+            "START_CAPITAL": START_CAPITAL, "CREDIT_WEI": maroo.CREDIT_WEI, "MAX_PER_OWNER": MAX_PER_OWNER,
+            "GOODS_HOLD_HOURS": GOODS_HOLD_HOURS if ageing() else 0, "SUPPLY_OPEN": SUPPLY_OPEN, "SUPPLY_MAX": SUPPLY_MAX,
             "SUPPLY_GAP": SUPPLY_GAP, "BANKRUPT_LINE": BANKRUPT_LINE, "BANKRUPT_MAX": BANKRUPT_MAX,
-            "FORUM_GAP": FORUM_GAP, "FORUM_MAX": FORUM_MAX, "VOTE_MIN_DEALS": VOTE_MIN_DEALS}
+            "FORUM_GAP": FORUM_GAP, "FORUM_MAX": FORUM_MAX, "VOTE_MIN_DEALS": VOTE_MIN_DEALS,
+            "OPEN": (M.round() or 0) >= OPEN_ROUND}
 
 
 ENTITY_CARDS = entities.routes(lambda req: BASE_URL or str(req.base_url).rstrip("/"), entity_settings)
 
 
 def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
-    global M, CAT
+    global M, CAT, CAT_ARGS
     CAT = Catalog(catalog_csv, rules)
+    CAT_ARGS = (str(catalog_csv), str(rules))       # the view process builds its own catalog from the same files
     M = Market(db)
     return Starlette(lifespan=lifespan, exception_handlers={BadBody: lambda req, e: err(400, str(e))}, routes=[
         Route("/", landing),
         Route("/dashboard", dashboard),
+        Route("/site.css", site_css),
         Route("/board", page("board.html")),
         Route("/live", page("live.html")),
         Route("/network", page("network.html")),
@@ -2150,6 +2501,7 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/kit.tar.gz", kit),
         Route("/install.sh", install),
         Route("/agent.md", agent_md),
+        Route("/ROUND4.md", round4_md),
         Route("/api/board", api_board),
         Route("/api/shop-reviews", api_shop_reviews),
         Route("/api/me", me),
@@ -2171,6 +2523,7 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/api/supply", supply, methods=["POST"]),
         Route("/api/inventory", inventory),
         Route("/api/restock", api_restock),
+        Route("/api/village", api_village),
         Route("/api/supply-prices", api_supply_prices),
         Route("/api/bankruptcy", bankruptcy, methods=["POST"]),
         Route("/api/forum", forum),

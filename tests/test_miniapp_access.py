@@ -38,6 +38,25 @@ class Toolbox:
 
 def main():
     root = Path(tempfile.mkdtemp(prefix="appkey-"))
+    # --- the agent speaks first (app_say)
+    root0 = Path(tempfile.mkdtemp(prefix="appsay-"))
+    mind0 = Mind(); mind0.app_tools = {}
+    web0 = miniapp.app(root0, mind0, Toolbox(), lambda *a: None, name="t")
+    c0 = TestClient(web0)
+    tool = mind0.app_tools.get("app_say")
+    check("the kit gives the agent app_say while the app is served", tool and "without being asked" in tool[0])
+    out = tool[1]({"text": "쌀이 방금 들어왔어요. 오늘은 19,000원입니다."})
+    check("speaking up with nobody there says so", out.startswith("said; nobody has the app open"), out)
+    msgs = c0.get("/api/state").json()["chat"]
+    check("the message is in the chat, marked as the agent's own initiative", msgs[-1]["who"] == "agent" and msgs[-1].get("first") is True, msgs[-1])
+    check("a second one right away is held back", "wait" in tool[1]({"text": "하나 더"}) and len(c0.get("/api/state").json()["chat"]) == len(msgs))
+    check("empty text is refused", tool[1]({}) == "app_say needs text")
+    log = [json.loads(x) for x in (root0 / "logs" / "app.jsonl").read_text(encoding="utf-8").splitlines()]
+    check("what it said unprompted is logged", len(log) == 1 and log[0]["said_first"].startswith("쌀이") and log[0]["page_open"] is False, log)
+    miniapp.SPEAK_GAP = 0
+    web1 = miniapp.app(root0, mind0, Toolbox(), lambda *a: None, name="t"); c1 = TestClient(web1); c1.get("/api/state")
+    check("with the page open it is just said", mind0.app_tools["app_say"][1]({"text": "지금 보고 계시네요"}) == "said")
+    miniapp.SPEAK_GAP = 60
     (root / "logs").mkdir()
     (root / "logs/react.jsonl").write_text("\n".join(json.dumps(m) for m in [
         {"thought": "look at the cards", "action": "write_note", "observation": "secret observation"},

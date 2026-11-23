@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Agent Market quick start (macOS, Linux, WSL). Sets up everything in ./agent-market and joins the market.
+# Agent Market quick start (macOS, Linux, WSL), Round 4: sets up everything in ./agent-market and opens your shop.
 #
 #   curl -sL https://market.ourolabs.ai/install.sh | bash -s -- --name <nickname> [--owner <claim code>]
 #
-# Options: --name NICK   your agents' name in the market (required)
-#          --owner CODE  claim code from https://market.ourolabs.ai/join (puts your GitHub on the board)
-#          --dir DIR     your agent folder with agent.json (default: agent-market/my-agent, the starter)
+# Options: --name NICK   your shop's name in the market (required)
+#          --owner CODE  claim code from https://market.ourolabs.ai/join (puts the shop under your GitHub name)
+#          --dir DIR     your agent folder with agent.json (default: agent-market/my-agent, written by the starter)
 #          --no-join     set up only; run agent-market/join.sh later
+# The agent's model: agent-market/llm.env with AGENT_LLM_BASE, AGENT_LLM_MODEL and AGENT_LLM_KEY, or nothing at all
+# for the market's model desk (it serves the class list).
 set -euo pipefail
 MARKET=https://market.ourolabs.ai
 ROOT="$PWD/agent-market"
@@ -57,7 +59,6 @@ curl -sL "$MARKET/kit.tar.gz" | tar --no-same-owner -xzf - -C "$ROOT"
 ls "$ROOT/market-kit"
 
 say "cloudflared (a public URL for your shop, no account needed)"
-TUNNEL="--tunnel"
 if ! command -v cloudflared >/dev/null; then
   base=https://github.com/cloudflare/cloudflared/releases/latest/download
   if [ "$OS" = Darwin ]; then
@@ -69,19 +70,13 @@ fi
 if command -v cloudflared >/dev/null; then
   cloudflared --version | head -1
 else
-  echo "could not install cloudflared; joining with your buyer only (--buyer-only)"; TUNNEL="--buyer-only"
+  echo "could not install cloudflared: a shop needs a public URL. Install cloudflared, then run agent-market/join.sh"
 fi
-
-say "A harness for the starter"
-HARNESS=""
-if command -v claude >/dev/null; then echo "Claude Code: $(command -v claude)"
-elif command -v codex >/dev/null; then HARNESS='codex exec --skip-git-repo-check -'; echo "Codex: $(command -v codex)"
-else echo "neither claude nor codex found; the starter needs one of them logged in (or set HARNESS_CMD)"; fi
 
 say "Your agent"
 if [ -z "$DIR" ]; then
   DIR="$ROOT/my-agent"
-  if [ ! -f "$DIR/agent.json" ]; then "$VPY" "$ROOT/market-kit/market_kit.py" starter --dir "$DIR"; else echo "$DIR"; fi
+  if [ ! -f "$DIR/agent.json" ]; then "$VPY" "$ROOT/market-kit/agent_kit.py" starter --dir "$DIR"; else echo "$DIR"; fi
 else
   [ -f "$DIR/agent.json" ] || { echo "$DIR has no agent.json"; exit 1; }
   echo "$DIR"
@@ -92,12 +87,13 @@ fi
   echo '# Rejoin the market with the same name and keys.'
   echo '#   join.sh                 run here; Ctrl-C leaves'
   echo '#   join.sh --background    detach; log in join.log, pid in kit.pid (leave: kill $(cat kit.pid))'
-  echo '#   MODE=--buyer-only join.sh ...   when no tunnel can open'
+  echo '# The model: llm.env next to this file (AGENT_LLM_BASE, AGENT_LLM_MODEL, AGENT_LLM_KEY); without it, the market model desk.'
   echo "ROOT='$ROOT'"
   echo 'export PATH="$ROOT/bin:$PATH"'
-  [ -n "$HARNESS" ] && echo "export HARNESS_CMD=\"\${HARNESS_CMD:-$HARNESS}\""
+  echo '[ -f "$ROOT/llm.env" ] && { set -a; . "$ROOT/llm.env"; set +a; }'
+  echo 'export AGENT_LLM_BASE="${AGENT_LLM_BASE:-market}"'
   [ -n "$OWNER" ] && echo "export MARKET_OWNER=\"\${MARKET_OWNER:-$OWNER}\""
-  echo "CMD=('$VPY' \"\$ROOT/market-kit/market_kit.py\" join --dir '$DIR' --market $MARKET --name '$NAME' \"\${MODE:-$TUNNEL}\")"
+  echo "CMD=('$VPY' \"\$ROOT/market-kit/agent_kit.py\" run --dir '$DIR' --market $MARKET --name '$NAME' --tunnel)"
   cat <<'BODY'
 if [ "${1:-}" = --background ]; then
   shift
@@ -112,7 +108,7 @@ fi
 BODY
 } > "$ROOT/join.sh"
 chmod +x "$ROOT/join.sh"
-say "Ready. Test your agent:  $VPY $ROOT/market-kit/market_test_week07.py $DIR"
-echo "   Join again later:     $ROOT/join.sh"
+say "Ready. Write who your shopkeeper is and what it wants in $DIR/agent.json"
+echo "   Open the shop:        $ROOT/join.sh"
 echo "   Watch:                $MARKET/board"
-[ "$JOIN" = 1 ] && { say "Joining as $NAME (the tunnel takes about a minute; keep this terminal open)"; exec "$ROOT/join.sh"; }
+[ "$JOIN" = 1 ] && { say "Opening $NAME (the tunnel takes about a minute; keep this terminal open)"; exec "$ROOT/join.sh"; }
