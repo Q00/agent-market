@@ -8,5 +8,6 @@ cd "$ROOT/publish/scripts"
 cp -R LICENSE maroo.py market_kit.py market_test_week07.py agent_kit.py forge_runner.py miniapp.py cli_model.py "$TMP/market-kit/"
 for d in starter_week07 starter_round3; do [ -d "$d" ] && cp -R "$d" "$TMP/market-kit/"; done   # starters live outside the public repo
 find "$TMP" -name __pycache__ -prune -exec rm -rf {} +
-tar czf "$ROOT/market/kit.tar.gz" -C "$TMP" market-kit
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$ROOT/market/kit.tar.gz" -C "$TMP" market-kit 2>/dev/null \
+  || tar czf "$ROOT/market/kit.tar.gz" -C "$TMP" market-kit   # macOS tar would add extended headers that other tars warn about
 echo "$ROOT/market/kit.tar.gz"
