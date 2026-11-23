@@ -268,6 +268,16 @@ def run(c, chain):
           [f.get("fee") for f in fees] == [0, 0, 0, 20000] and fees[3].get("fee_added_to_next_lot") is True, fees)
     q2 = other.post("/api/supply", {"sku": first_sku, "qty": 1}).json()
     check(F, "the next quote carries that fee", q2.get("forum_fees") == 20000 and q2.get("total") == q2.get("goods") + q2.get("storage") + 20000, q2)
+    # --- a new shop cannot file for bankruptcy to be paid twice while its starting capital is on its way
+    early = Agent(c, "s-early", "shop")
+    e1 = early.post("/api/bankruptcy", {})
+    for _ in range(40):
+        if chain.balances.get(early.key.address, 0) >= START * CW:
+            break
+        time.sleep(0.25)
+    time.sleep(1.5)
+    check(F, "a shop that files before its starting capital arrived is refused and is paid once",
+          e1.status_code == 409 and chain.balances.get(early.key.address, 0) == START * CW, (e1.text[:160], chain.balances.get(early.key.address, 0) / CW))
     # --- a shop whose wallet is nearly empty files once; its money is on the way, so a second filing waits
     poor = Agent(c, "s-poor", "shop")
     poor.inv()
