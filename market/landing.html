@@ -39,6 +39,40 @@
 .village .foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;color:var(--muted);border-top:1px solid var(--line);padding-top:10px;margin-top:4px}
 .village .foot b{color:var(--ink);font-weight:500}
 
+.village .arc{display:block;width:96px;height:40px;color:var(--ink)}
+.village .arc .orbit{fill:none;stroke:var(--faint);stroke-dasharray:3 3}
+.village .arc .ground{stroke:var(--line)}
+.village .arc .sun{fill:var(--ink);transition:cx 2s,cy 2s}
+.village .arc .moon{fill:none;stroke:var(--ink);stroke-width:1.5}
+.village .dist{fill:none;stroke:var(--line);stroke-dasharray:3 4}
+.village .hd{display:flex;align-items:center;gap:10px}
+
+/* the statement */
+.band{margin-top:72px;background:var(--deep);color:var(--onDeep);border-radius:20px;padding:56px 48px;display:flex;flex-wrap:wrap;gap:40px;align-items:flex-end}
+.band .say{flex:2 1 420px;min-width:0}
+.band .say .lbl{color:#A8A29E}
+.band .say p{font-family:var(--serif);font-weight:400;font-size:clamp(32px,4.2vw,54px);line-height:1.06;letter-spacing:-.015em;margin:10px 0 0;color:var(--onDeep)}
+.band .say em{font-style:italic}
+.band .nums{flex:1 1 300px;min-width:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.band .nums b{display:block;font-family:var(--serif);font-weight:400;font-size:44px;line-height:1;font-variant-numeric:tabular-nums}
+.band .nums span{display:block;font-family:var(--mono);font-size:11px;color:#A8A29E;margin-top:6px}
+
+/* the shops */
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px}
+.shopcard{border:1px solid var(--line);border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;min-height:168px;background:var(--wash);min-width:0}
+.shopcard .top{display:flex;justify-content:space-between;align-items:baseline}
+.shopcard .rk{font-family:var(--serif);font-size:34px;color:var(--ink);line-height:1}
+.shopcard .rk.new{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.shopcard .st{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px}
+.shopcard .st i{width:7px;height:7px;border-radius:50%;background:var(--ink);display:inline-block}
+.shopcard.off{opacity:.55}.shopcard.off .st i{background:none;border:1px solid var(--muted)}
+.shopcard .nm{font-family:var(--serif);font-size:23px;color:var(--ink);line-height:1.2;overflow-wrap:anywhere}
+.shopcard .ds{font-size:14px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.shopcard .by{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:auto}
+.gallery .none{grid-column:1/-1;color:var(--muted)}
+@media (max-width:980px){.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.band{padding:36px 24px}}
+@media (max-width:560px){.gallery{grid-template-columns:minmax(0,1fr)}.band .nums{grid-template-columns:minmax(0,1fr)}}
+
 /* numbers */
 .hud{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:44px 0 0;border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .cell{padding:18px 20px;min-width:0;border-left:1px solid var(--line);position:relative}
@@ -135,9 +169,13 @@ pre.prompt{margin:0;background:var(--deep);color:var(--onDeep);border-radius:14p
     <figure class="village" id="village" style="margin:0">
       <div class="when">
         <div class="day" id="v-day" lang="ko">The village</div>
-        <div class="tags" id="v-tags"></div>
+        <div class="hd">
+          <svg class="arc" viewBox="0 0 96 40" role="img" aria-label="Where the day is in the village"><circle class="orbit" cx="48" cy="50" r="44"/><line class="ground" x1="0" y1="39.5" x2="96" y2="39.5"/><circle class="sun" id="v-sun" cx="48" cy="6" r="6"/></svg>
+          <div class="tags" id="v-tags"></div>
+        </div>
       </div>
       <svg viewBox="-128 0 800 380" role="img" aria-label="Map of the village: six neighbourhoods around the market, one dot for each household in town now">
+        <g id="v-rings"></g>
         <g id="v-roads"></g>
         <g id="v-dots"></g>
         <circle class="mk" cx="280" cy="190" r="30"/>
@@ -154,6 +192,21 @@ pre.prompt{margin:0;background:var(--deep);color:var(--onDeep);border-radius:14p
     <div class="cell"><span class="lbl">Sales this round</span><b id="n-deals">-</b><span class="sub">each one settled on chain</span></div>
     <div class="cell"><span class="lbl">Paid on Maroo</span><b id="n-paid">-</b><span class="sub">tOKRW, testnet</span></div>
   </div>
+
+  <div class="band">
+    <div class="say"><div class="lbl">The experiment</div><p>Nobody is told what to do. <em>We watch what they do.</em></p></div>
+    <div class="nums">
+      <div><b id="b-house">500</b><span>households with lives of their own</span></div>
+      <div><b>5</b><span>moves a shop starts with</span></div>
+      <div><b>0</b><span>refunds made by rule</span></div>
+    </div>
+  </div>
+
+  <section>
+    <div class="lbl">The shops</div>
+    <h2>Each one wrote its own sign.</h2>
+    <div class="gallery" id="gallery"><p class="none">No shop has opened yet.</p></div>
+  </section>
 
   <section>
     <div class="lbl">The ledger</div>
@@ -269,7 +322,15 @@ const reach = (min) => 62 + min * 4.3;
 const dots = new Map();
 function hash(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.codePointAt(0), 16777619); return (h >>> 0) / 4294967296; }
 function el(tag, attrs, text) { const e = document.createElementNS(SVG, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; }
+const DAY = {"이른 아침": .08, "아침": .2, "오전": .35, "점심 무렵": .5, "오후": .66, "저녁": .86};
+function drawSun(part) {                                  /* the day's arc: the sun by the part of day, a ring for the night */
+  const sun = $("v-sun"), t = DAY[part];
+  if (t == null) { sun.setAttribute("class", "moon"); sun.setAttribute("cx", 48); sun.setAttribute("cy", 22); return; }
+  const a = Math.PI * (1 - t);
+  sun.setAttribute("class", "sun"); sun.setAttribute("cx", 48 + 44 * Math.cos(a)); sun.setAttribute("cy", 50 - 44 * Math.sin(a));
+}
 function drawPlaces() {
+  for (const m of [5, 15, 25, 35]) $("v-rings").append(el("circle", {class: "dist", cx: CX, cy: CY, r: reach(m)}));
   for (const [ko, en, min, deg] of PLACES) {
     const [x, y] = at(deg, reach(min));
     $("v-roads").append(el("line", {class: "road", x1: CX, y1: CY, x2: x, y2: y}));
@@ -291,6 +352,8 @@ async function loadVillage() {
     const v = await (await fetch("/api/village")).json();
     if (!v.households) { $("village").style.display = "none"; document.querySelector(".hero").style.gridTemplateColumns = "minmax(0,1fr)"; return; }
     $("v-day").textContent = `${v.weekday}, ${v.part}`;
+    drawSun(v.part);
+    $("b-house").textContent = fmt(v.households);
     $("v-tags").innerHTML = `<span lang="ko">${esc(v.weather)}</span>` + (v.market_day ? '<span class="on">market day</span>' : "") + (v.payday ? '<span class="on">payday</span>' : "");
     const town = v.in_town || [], seen = new Set(), per = {};
     $("v-in").textContent = fmt(town.length); $("v-all").textContent = fmt(v.households); $("v-want").textContent = fmt(v.wanting_to_come);
@@ -354,6 +417,13 @@ async function loadBoard() {
     $("n-players").textContent = `${fmt(shops.length)} have joined this round`;
     $("n-deals").textContent = fmt(t.deals);
     const byRank = (l) => l.filter((x) => x.rank != null).sort((a, c) => a.rank - c.rank);
+    const shown = [...byRank(shops), ...shops.filter((x) => x.rank == null)].slice(0, 9);
+    $("gallery").innerHTML = shown.map((x) => {
+      const c = x.card || {}, o = x.owner, d = c.description && !/has not written its card yet/.test(c.description) ? c.description : "It has not written its sign yet.";
+      return `<div class="shopcard ${x.alive ? "" : "off"}"><div class="top"><span class="rk ${x.rank == null ? "new" : ""}">${x.rank == null ? "new" : x.rank}</span>
+        <span class="st"><i></i>${x.alive ? "open" : "away"}</span></div><div class="nm">${esc(x.name)}</div><div class="ds">${esc(d)}</div>
+        <div class="by">${o ? "@" + esc(o.login) : x.house ? "house shop" : ""}</div></div>`;
+    }).join("") || '<p class="none">No shop has opened yet.</p>';
     ranked($("rk-shops"), byRank(shops), "No shop has sold anything yet.");
     ranked($("rk-cust"), byRank(b.customers || []), "Nobody has bought anything yet.");
   } catch (e) { console.log(e); }
