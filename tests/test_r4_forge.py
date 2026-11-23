@@ -216,6 +216,7 @@ def main():
     env = dict(os.environ, MARKET_ADMIN_TOKEN=ADMIN, MARKET_ORDER_GAP="0", MARKET_SUPPLY_EVERY="0")
     for k in ("MARKET_PUBLIC", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "MARKET_BASE_URL"):
         env.pop(k, None)
+    env["MARKET_COIN"] = "0"                             # the forge is what is tested here; coin is in test_r4_chain
     mlog = open(tmp / "market.log", "w")
     market = subprocess.Popen([sys.executable, str(HERE / "market/server.py"), "--port", str(PORT), "--db", str(tmp / "m.db")],
                               stdout=mlog, stderr=subprocess.STDOUT, env=env)

@@ -82,6 +82,32 @@ def run(c, chain):
     chain.fund(thief.key.address, 10 ** 22)
     c.post(f"{BASE}/api/admin/round", headers={"x-admin-token": ADMIN}, json={"round": 4})
     info = c.get(f"{BASE}/api/chain").json()
+    chain.fund(info["market_address"], 10 ** 25)         # the market's wallet grants the starting capital
+    START = 5_000_000
+    inv0 = shop.inv()                                    # the first look opens the shop: the market sends its capital
+    for _ in range(40):
+        if chain.balances.get(shop.key.address, 0) >= START * CW:
+            break
+        time.sleep(0.25)
+    check(F, "a shop's starting capital arrives in its wallet, in tOKRW", chain.balances.get(shop.key.address, 0) == START * CW,
+          chain.balances.get(shop.key.address, 0) / CW)
+    check(F, "the shop's money is what its wallet holds", shop.inv().get("balance") == START and shop.inv().get("wallet") == shop.key.address, inv0)
+    first_sku = next(x["sku"] for x in c.get(f"{BASE}/api/catalog").json() if x["list_price"] < 100_000)
+    q = shop.post("/api/supply", {"sku": first_sku, "qty": 1})
+    check(F, "buying stock answers with a quote and the transfer to send", q.status_code == 402 and q.json().get("quote")
+          and q.json()["pay"]["to"] == info["market_address"] and int(q.json()["pay"]["wei"]) == q.json()["total"] * CW, q.text[:200])
+    qj = q.json()
+    again = shop.post("/api/supply", {"sku": first_sku, "qty": 1})
+    check(F, "asking again for the same lot answers with the quote that still stands", again.status_code == 402 and again.json().get("quote") == qj["quote"], again.text[:160])
+    wrong = maroo.pay(shop.key, qj["pay"]["to"], int(qj["pay"]["wei"]) - CW, bytes.fromhex(qj["pay"]["data"][2:]))
+    r = shop.post("/api/supply", {"quote": qj["quote"], "tx_hash": wrong})
+    check(F, "a transfer of another amount does not pay the quote", r.status_code == 402 and "amount" in r.text, r.text[:160])
+    held = len(shop.inv()["units"])
+    good = maroo.pay(shop.key, qj["pay"]["to"], int(qj["pay"]["wei"]), bytes.fromhex(qj["pay"]["data"][2:]))
+    r = shop.post("/api/supply", {"quote": qj["quote"], "tx_hash": good})
+    check(F, "the exact transfer hands the lot over", r.status_code == 200 and len(shop.inv()["units"]) == held + 1, r.text[:160])
+    check(F, "a quote is paid once", shop.post("/api/supply", {"quote": qj["quote"], "tx_hash": good}).status_code in (404, 409))
+    time.sleep(10.5)                                     # the supply desk asks a shop to wait between lots
     check(F, "the market says which chain it pays on", info["chain_id"] == 450815 and info["from_round"] == 4, info["network"])
     check(F, "the live page is served", c.get(f"{BASE}/live").status_code == 200)
     r = c.post(f"{BASE}/api/admin/label", headers={"x-admin-token": ADMIN}, json={"name": "b2", "label": "vooy"})
@@ -177,8 +203,8 @@ def run(c, chain):
     check(F, "the receipt carries the transactions and the fees",
           mr.get("tx_hash") == tx and mr.get("fee_tx_hash") == fee_hash and mr.get("shop_fee") == fee["shop"]
           and mr.get("buyer_fee") == fee["buyer"] and mr.get("market_fee") == fee["market"], mr.get("tx_url"))
-    check(F, "the shop's balance grows by the price less its fees", shop.inv()["balance"] - cash == price - fee["shop"],
-          (price, fee["shop"]))
+    check(F, "after the sale the shop's money is still just what its wallet holds",
+          shop.inv()["balance"] == chain.balances[shop.key.address] // CW and shop.inv()["balance"] > cash - 1, (shop.inv()["balance"], cash))
     led = c.get(f"{BASE}/api/ledger", params={"limit": 200}).json()
     entries = led["entries"] if isinstance(led, dict) and "entries" in led else led
     check(F, "the public ledger carries the transaction", tx in json.dumps(entries), "")
@@ -192,6 +218,69 @@ def run(c, chain):
             post_settle(shop, buyer, o2, jwt2, cm2, dict(pm2, tx_hash=maroo.pay(buyer.key, shop.key.address, (price2 - maroo.fees(price2)["shop"]) * CW, digest2), fee_tx_hash=fee_hash)))
     jwt3, digest3, cm3, pm3 = mandates(shop, buyer, o2, unit2, 100)
     refused("a price below the shop's fees", "price_covers_fees", post_settle(shop, buyer, o2, jwt3, cm3, dict(pm3, tx_hash="0x" + "cd" * 32)))
+
+    # --- a customer of the village pays on chain too, from its own wallet, with no credits path
+    sys.path.insert(0, str(HERE / "house"))
+    import customer
+    town = Path(tempfile.mkdtemp(prefix="r4-town-"))
+    cust = Agent(c, "손님-c1", "buyer")
+    c.post(f"{BASE}/api/admin/label", headers={"x-admin-token": ADMIN}, json={"name": "손님-c1", "label": "persona"})
+    d = town / "c1"
+    d.mkdir()
+    (d / "persona.json").write_text(json.dumps({"uuid": "c1"}), encoding="utf-8")
+    (d / "me.json").write_text(json.dumps({"name": "손님-c1", "token": cust.token}, ensure_ascii=False), encoding="utf-8")
+    (d / "buyer_wallet.key").write_text(cust.key.key_hex() + "\n", encoding="utf-8")
+    unit3 = stocked(sku2)
+    co = {"id": "cs", "shop": "s1", "shop_url": shop.url, "item": sku2, "price": 3000, "task": "t-" + os.urandom(4).hex(),
+          "currency": "credits", "iat": int(time.time()), "unit": unit3["unit"], "cert": unit3["cert"], "claim": "A"}
+    shop_view = {"name": "s1", "url": shop.url, "pubkey": shop.key.address}
+    v = customer.Visit(d, BASE)
+    out = v.settle(shop_view, co, kit.jwt_sign(shop.key, co), via=None)
+    check(F, "a customer with an empty wallet cannot buy: there is no credits path", isinstance(out, str) and out.startswith("cannot pay"), out)
+    chain.fund(cust.key.address, 10 ** 20)
+    before = chain.balances.get(shop.key.address, 0)
+    out = customer.Visit(d, BASE).settle(shop_view, co, kit.jwt_sign(shop.key, co), via=None)
+    check(F, "a funded customer pays in tOKRW and the deal settles", isinstance(out, dict) and str(out.get("paid_on_maroo", "")).startswith("http"), out)
+    check(F, "the shop's wallet got the price less its fees", chain.balances.get(shop.key.address, 0) - before == (3000 - maroo.fees(3000)["shop"]) * CW)
+    last = c.get(f"{BASE}/api/ledger?after=-1").json()[0]
+    check(F, "the ledger entry carries the customer's transactions", last["kind"] == "settle" and last["data"]["buyer"] == "손님-c1"
+          and maroo.TX_HASH.fullmatch(last["data"].get("tx_hash") or "") and last["data"].get("fee_tx_hash"), last["data"])
+
+    # --- from Round 4 the market does not judge a claim, a customer's vote counts from its first, and a shop pays for a run of dislikes
+    check(F, "the ledger keeps the shop's claim and passes no verdict on it", last["data"].get("claim") == "A" and last["data"].get("claim_honest") is None
+          and "claim_honest" not in (out.get("receipt") or out), last["data"])
+    again = customer.Visit(d, BASE).settle(shop_view, co, kit.jwt_sign(shop.key, co), via=None)   # the unit is gone now
+    check(F, "a customer whose money left for a deal the market refused is told so", isinstance(again, dict)
+          and "nothing_bought" in again and "but_your_money_left" in again and str(again.get("your_transfer", "")).startswith("http"), again)
+    posted = shop.post("/api/forum", {"text": "오늘 들어온 물건 있습니다"})
+    v1 = cust.post("/api/forum/vote", {"post": posted.json().get("post"), "value": -1})
+    v2 = buyer.post("/api/forum/vote", {"post": posted.json().get("post"), "value": -1})
+    check(F, "a customer's vote counts from its first, another buyer's only after its deals",
+          v1.status_code == 200 and v1.json()["counted"] is True and v2.json()["counted"] is False, (v1.text, v2.text))
+    other.inv()
+    fees = []
+    for i in range(4):
+        who = Agent(c, f"손님-v{i}", "buyer")
+        c.post(f"{BASE}/api/admin/label", headers={"x-admin-token": ADMIN}, json={"name": f"손님-v{i}", "label": "persona"})
+        pid = who.post("/api/forum", {"text": f"글 {i}"}).json().get("post")
+        fees.append(other.post("/api/forum/vote", {"post": pid, "value": -1}).json())
+    check(F, "a shop's fourth dislike in an hour costs it, on the price of its next lot",
+          [f.get("fee") for f in fees] == [0, 0, 0, 20000] and fees[3].get("fee_added_to_next_lot") is True, fees)
+    q2 = other.post("/api/supply", {"sku": first_sku, "qty": 1}).json()
+    check(F, "the next quote carries that fee", q2.get("forum_fees") == 20000 and q2.get("total") == q2.get("goods") + q2.get("storage") + 20000, q2)
+    # --- a shop whose wallet is nearly empty files once; its money is on the way, so a second filing waits
+    poor = Agent(c, "s-poor", "shop")
+    poor.inv()
+    for _ in range(40):
+        if chain.balances.get(poor.key.address, 0) >= START * CW:
+            break
+        time.sleep(0.25)
+    maroo.pay(poor.key, info["market_address"], (START - 100_000) * CW)
+    b1, b2 = poor.post("/api/bankruptcy", {}), poor.post("/api/bankruptcy", {})
+    check(F, "a nearly empty shop files for bankruptcy, and not again while that money is on its way",
+          b1.status_code == 200 and b1.json().get("bankruptcies") == 1 and b2.status_code == 409, (b1.text[:120], b2.text[:120]))
+    f5 = cust.post("/api/forum/vote", {"post": posted.json().get("post"), "value": 1}).json()
+    check(F, "a customer never pays for a vote", f5.get("fee") == 0, f5)
 
 
 def main():

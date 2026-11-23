@@ -105,6 +105,10 @@ class Agent:
     def supply(self, sku, qty, wait=True):
         while True:
             r = self.post("/api/supply", {"sku": sku, "qty": qty})
+            if r.status_code == 402 and r.json().get("quote"):   # Round 4 in coin: pay the quote from the shop's wallet
+                q = r.json()
+                tx = maroo.pay(self.key, q["pay"]["to"], int(q["pay"]["wei"]), bytes.fromhex(q["pay"]["data"][2:]))
+                r = self.post("/api/supply", {"quote": q["quote"], "tx_hash": tx})
             if r.status_code == 429 and wait:
                 time.sleep(float(r.json()["wait"]) + 0.2)
                 continue
