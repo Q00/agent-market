@@ -449,7 +449,8 @@ class Visit:
             f.write(json.dumps(dict(got, agent=shop["name"], ts=int(time.time())), ensure_ascii=False) + "\n")
         name, said = str(got["bought"])[:80], got.get("shop_said_grade")
         ev = self.mind.event("bought", shop["name"], f"{name} for {co['price']} credits; the certificate says grade "
-                             f"{got.get('grade')}" + (f"; the shop had said grade {said}" if said else ""))
+                             f"{got.get('grade')}" + (f"; the shop had said grade {said}" if said else "")
+                             + f"; receipt: order {o['order']}" + (f", your transfer {paym['tx_hash']}" if paym.get("tx_hash") else ""))
         self.mind.fact(shop["name"], "sold you", name, False, [ev])
         self.mind.fact(f"{shop['name']} {name}", "price", str(co["price"]), True, [ev])
         self.done["bought"].append(True)

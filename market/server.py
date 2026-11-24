@@ -831,7 +831,8 @@ async def customer(req: Request):
     names = {r["url"]: r["name"] for r in M.db.execute("select url, name from shop_urls")}
     broke = [{"order": s["order_id"], "shop": names.get(s["shop_url"], s["shop_url"]), "item": s["item"],
               "name": (CAT.sku.get(s["item"]) or {}).get("name"), "paid": s["price"], "bought_at": int(s["ts"]),
-              "hours_until_it_broke": round((s["break_at"] - s["ts"]) / 3600, 1), "warranty_hours": s["warranty_hours"]}
+              "hours_until_it_broke": round((s["break_at"] - s["ts"]) / 3600, 1), "warranty_hours": s["warranty_hours"],
+              "paid_with": s["tx_hash"]}
              for s in M.db.execute("select * from settlements where buyer=? and broke=1 order by ts desc limit 20", (p["name"],))]
     return JSONResponse({"name": p["name"], "credits_left": persona_left(p["name"], time.time()), "daily": PERSONA_DAILY,
                          "wallet": p["pubkey"], "broke": broke})

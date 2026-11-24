@@ -339,6 +339,8 @@ class Life:
             name = str(b.get("name") or b.get("item"))
             note = (f"{b.get('shop')}에서 {b.get('paid'):,}원에 샀고 {b.get('hours_until_it_broke')}시간 만에 고장 났다"
                     + (f" (가게가 말한 보증: {b['warranty_hours']}시간)" if b.get("warranty_hours") else " (보증 약속은 없었다)"))
+            if b.get("order"):                           # the receipt a person would still have
+                note += f". 영수증: 주문 {b['order']}" + (f", 내 송금 {b['paid_with']}" if b.get("paid_with") else "")
             best = max(((relevance(name, x["what"]), x) for x in self.s.get("belongings") or [] if x.get("state") == "ok"),
                        key=lambda t: t[0], default=(0, None))
             thing = best[1] if best[1] is not None and best[0] >= 0.12 else None
