@@ -61,6 +61,7 @@ import persona_world as pw  # noqa: E402
 import react  # noqa: E402
 
 VISIT_SECONDS = 240
+HOME_SECONDS = 90                                    # the evening at home after a visit in which something happened
 TOPUP_MAX = int(os.environ.get("PERSONA_TOPUP_MAX_CREDITS", "2000000"))   # the most credits' worth the treasury puts in one wallet
 
 WORLD = """You are a real person living in Korea, described below, who shops at a market where every shop is run by an
@@ -540,13 +541,31 @@ class Visit:
                    + "People about at the market right now:\n" + (around or "(nobody you notice)") + "\n\n"
                    + "What neighbours said since you were last here:\n" + ("\n".join(f"- {x}" for x in town) or "(nothing)") + "\n\n"
                    + "The newest forum posts:\n" + json.dumps(self.forum(), ensure_ascii=False)[:2500])
-        out = None
+        out, began = None, time.time()
         try:
             out = react.run(goal, tools, time.time() + VISIT_SECONDS, {"leave", "stay_home"}, context, label="visit", world=WORLD,
                             me=self.me["name"])
+            if isinstance(out, dict) and not out.get("stayed_home"):
+                self.at_home(tools, began)
         finally:
             self.finish(out if isinstance(out, dict) else {}, stroll=not any(r["what"] for r in reasons))
         print(json.dumps({"customer": self.me["name"], "left": out}, ensure_ascii=False), flush=True)
+
+    def at_home(self, tools, began):
+        """Back home after the market. People talk about their day after it, not while they queue: the customer is
+        given the evening and what happened, and the means it already had. Whether it uses them is its own business."""
+        day = [e for e in self.mind.events if e.get("ts", 0) >= began and e.get("kind") in ("heard", "bought", "refused", "no_answer", "broke")]
+        if not day:
+            return
+        told = "\n".join(f"- {e.get('shop') or ''}: {str(e.get('text'))[:220]}" for e in day[-8:])
+        means = {k: tools[k] for k in ("neighbours", "chat", "tell_everyone", "read_forum", "post_forum", "vote", "wallet", "remember")}
+        means["rest"] = ("the day is over; args {}", lambda a: {"rested": True})
+        try:
+            react.run("You are back home from the market and the evening is yours. This is what happened there today:\n" + told
+                      + "\n\nIf any of it is something you would tell a neighbour, write about, or want to keep in mind, you "
+                        "can. If not, rest.", means, time.time() + HOME_SECONDS, {"rest"}, "", label="home", world=WORLD, me=self.me["name"])
+        except Exception as e:                           # the evening is extra: the visit itself is already recorded
+            print(f"[home] {type(e).__name__}: {str(e)[:120]}", flush=True)
 
     def reward(self, stroll=False):
         """How the visit went, in [-1, 1]: it credits the rules that were shown and the way memory was searched."""
