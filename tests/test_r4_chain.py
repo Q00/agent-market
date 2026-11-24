@@ -32,11 +32,11 @@ CW = maroo.CREDIT_WEI
 F = "r4"
 
 
-def mandates(shop, buyer, o, unit, price, tx_hash=None, data=None, sign_with=None):
+def mandates(shop, buyer, o, unit, price, tx_hash=None, data=None, sign_with=None, extra=None):
     """The checkout and the buyer's closed mandates. data=None: the transaction names this checkout."""
     co = {"id": "cs", "shop": shop.name, "shop_url": shop.url, "item": unit["sku"], "price": price,
           "task": "t-" + os.urandom(6).hex(), "currency": "credits", "iat": int(time.time()), "unit": unit["unit"],
-          "cert": unit["cert"]}
+          "cert": unit["cert"], **(extra or {})}
     jwt = kit.jwt_sign(shop.key, co)
     digest = hashlib.sha256(jwt.encode()).digest()
     h = kit.b64url(digest)
@@ -208,6 +208,48 @@ def run(c, chain):
     led = c.get(f"{BASE}/api/ledger", params={"limit": 200}).json()
     entries = led["entries"] if isinstance(led, dict) and "entries" in led else led
     check(F, "the public ledger carries the transaction", tx in json.dumps(entries), "")
+    plain = next(e for e in reversed(entries) if e["kind"] == "settle")
+    check(F, "an unsealed sale is on the ledger as before", plain["data"].get("amount") == price and "sealed" not in plain["data"]
+          and plain["data"].get("buyer") == buyer.name, plain["data"])
+
+    # Patch 4.1: a shop may seal a sale
+    os_, sku_s = goods_order()
+    unit_s = stocked(sku_s)
+    price_s = min(os_["budget"], CAT[sku_s]["list_price"])
+    co_extra = {"private": True, "claim": "A", "warranty_hours": 12}
+    jwt_s, digest_s, cm_s, pm_s = mandates(shop, buyer, os_, unit_s, price_s, extra=co_extra)
+    fee_s = maroo.fees(price_s)
+    tx_s = maroo.pay(buyer.key, shop.key.address, (price_s - fee_s["shop"]) * CW, digest_s)
+    ftx_s = maroo.pay(buyer.key, market, fee_s["market"] * CW, digest_s)
+    r = post_settle(shop, buyer, os_, jwt_s, cm_s, dict(pm_s, tx_hash=tx_s, fee_tx_hash=ftx_s))
+    j = r.json()
+    check(F, "a sealed sale settles", r.status_code == 200 and j.get("settled"), r.text[:200])
+    check(F, "the parties' receipt of a sealed sale is whole", j.get("mandate_receipt", {}).get("tx_hash") == tx_s
+          and j["mandate_receipt"].get("sku") == sku_s)
+    ents = c.get(f"{BASE}/api/ledger", params={"after": -50}).json()
+    se = next(e for e in ents if e["seq"] == j["ledger"])
+    text = json.dumps(se, ensure_ascii=False)
+    check(F, "the public entry of a sealed sale names the order and the shop, and nothing of what was sold",
+          set(se["data"]) == {"order", "shop", "sealed"} and tx_s not in text and sku_s not in text
+          and unit_s["unit"] not in text and kit.b64url(digest_s) not in text, se["data"])
+    chain_ok, prev = True, None
+    for e in c.get(f"{BASE}/api/ledger", params={"after": 0}).json():
+        body = {"seq": e["seq"], "ts": e["ts"], "kind": e["kind"], "round": e["round"], "data": e["data"], "prev": e["prev"]}
+        chain_ok = chain_ok and hashlib.sha256(canon(body)).hexdigest() == e["hash"] and (prev is None or e["prev"] == prev)
+        prev = e["hash"]
+    check(F, "the ledger's hash chain still verifies across a sealed entry", chain_ok)
+    mine = shop.get(f"/api/ledger/sealed?seq={se['seq']}")
+    opened = mine.json()[0] if mine.status_code == 200 else {}
+    check(F, "the shop opens its own sealed entry", mine.status_code == 200 and opened.get("data", {}).get("amount") == price_s
+          and opened["data"].get("tx_hash") == tx_s and opened["data"].get("claim") == "A", mine.text[:200])
+    check(F, "the data and the salt reproduce the hash on the ledger", bool(opened)
+          and hashlib.sha256(opened["salt"].encode() + canon(opened["data"])).hexdigest() == se["data"]["sealed"])
+    check(F, "the customer of the deal opens it too, by order",
+          buyer.get(f"/api/ledger/sealed?order={os_['order']}").status_code == 200)
+    check(F, "another shop cannot open it", other.get(f"/api/ledger/sealed?seq={se['seq']}").status_code == 403)
+    check(F, "nobody opens it without a token", c.get(f"{BASE}/api/ledger/sealed?seq={se['seq']}").status_code == 401)
+    check(F, "the board's count of paid deals includes the sealed one",
+          c.get(f"{BASE}/api/chain").json()["paid_this_round"]["deals"] >= 2)
 
     o2, sku2 = goods_order()
     unit2 = stocked(sku2)

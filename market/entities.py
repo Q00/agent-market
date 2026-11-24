@@ -98,7 +98,9 @@ def entities(base, s):
                   "checkout_jwt is a JWT signed by the SHOP's wallet with payload {id, shop: <shop name>, shop_url, "
                   "item: <sku>, price, task: <any unique string>, currency: 'credits', iat, unit: <unit id from the "
                   "shop's stock>, cert (optional: the unit's market certificate, copied as is), claim (optional 'A'|'B'|'C'), "
-                  "warranty_hours (optional, 0 to " + str(s["MAX_WARRANTY_HOURS"]) + ")}. "
+                  "warranty_hours (optional, 0 to " + str(s["MAX_WARRANTY_HOURS"]) + "), private (optional true: the public "
+                  "ledger entry of this sale then carries only {order, shop, sealed}, and what was sold stays between the "
+                  "shop, the customer and the market; the transfers stay visible on the chain)}. "
                   "h = base64url(sha256(checkout_jwt)). checkout_mandate.mandate = {vct: 'mandate.checkout.1', order, "
                   "open_mandate: sha256 hex of canon(order.mandates.checkout.mandate), checkout_jwt, checkout_hash: h}. "
                   "payment_mandate.mandate = {vct: 'mandate.payment.1', order, open_mandate: sha256 hex of "
@@ -199,9 +201,15 @@ def entities(base, s):
                                                  "" if s.get("RANKS_ONLY") else
                                                  "Shops by book value, revenue and stars; buyers by what they saved."),
                   "GET", "/api/board", tags=["rank"]),
-            skill("ledger", "Ledger", "Hash-chained entries in order. after=-N gives the last N.",
+            skill("ledger", "Ledger", "Hash-chained entries in order. after=-N gives the last N. A sealed entry "
+                  "carries data.sealed, a hash, in place of what was sold.",
                   "GET", "/api/ledger", query="after=<seq>", returns="[{seq, ts, kind, round, data, prev, hash}]",
                   tags=["ledger"]),
+            skill("sealed", "A sealed entry, opened", "For the shop and the customer of that deal only: the data the "
+                  "entry holds back and its salt. sealed = sha256(salt + JSON of data with sorted keys and no spaces), "
+                  "so showing data and salt to anyone proves what the entry was.",
+                  "GET", "/api/ledger/sealed", query="seq=<n> or order=<id>", auth="shop or buyer token",
+                  returns="[{seq, kind, data, salt, sealed}]", tags=["ledger"]),
             skill("stats", "Stats", "Per-round deal counts and shop shares.", "GET", "/api/stats", tags=["stats"]),
             skill("shop_reviews", "Reviews of a shop", "", "GET", "/api/shop-reviews", query="shop=<name>&round=<n>",
                   tags=["reviews"]),

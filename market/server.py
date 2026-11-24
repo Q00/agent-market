@@ -322,6 +322,9 @@ class Market:
             shop_url text, stars int, text text, result_id int, verified int);
         create table if not exists ledger(seq integer primary key, ts real, kind text, round int,
             data text, prev text, hash text);
+        -- what a sealed ledger entry holds back: the entry keeps sha256(salt + canon(data)), the parties may read this
+        create table if not exists sealed(seq integer primary key, kind text, order_id text, shop text, buyer text,
+            salt text, data text);
         create table if not exists users(login text primary key, gh_id int, avatar text, html text,
             claim text unique, created real);
         create index if not exists results_round on results(round, id);
@@ -394,9 +397,17 @@ class Market:
         r = self.db.execute("select v from meta where k='round'").fetchone()
         return None if r is None else int(r["v"])
 
-    def append(self, kind, data):
+    def append(self, kind, data, sealed=None):
+        """One more ledger entry. sealed={data, order, shop, buyer}: that data stays off the public entry, which carries
+        sha256(salt + canon(data)) in its place; the chain's hash is computed over the entry as published."""
         last = self.db.execute("select seq, hash from ledger order by seq desc limit 1").fetchone()
         seq, prev = (last["seq"] + 1, last["hash"]) if last else (1, "0" * 64)
+        if sealed is not None:
+            salt = os.urandom(16).hex()
+            data = dict(data, sealed=hashlib.sha256(salt.encode() + canon(sealed["data"])).hexdigest())
+            self.db.execute("insert into sealed values(?,?,?,?,?,?,?)",
+                            (seq, kind, sealed.get("order"), sealed.get("shop"), sealed.get("buyer"), salt,
+                             json.dumps(sealed["data"], ensure_ascii=False, allow_nan=False)))
         entry = {"seq": seq, "ts": round(time.time(), 3), "kind": kind, "round": self.round() or 0,
                  "data": data, "prev": prev}
         h = hashlib.sha256(canon(entry)).hexdigest()
@@ -1026,8 +1037,13 @@ async def settle(req: Request):
                       shop_fee=fee["shop"], buyer_fee=fee["buyer"], market_fee=fee["market"])
     M.db.execute(f"insert into settlements({', '.join(cols)}) values({', '.join('?' * len(cols))})", list(cols.values()))
     M.db.commit()
-    seq, h = M.append("settle", {"order": o["id"], "buyer": o["buyer"], "shop": norm_url(p["url"]), "item": cols["item"],
-                                 "amount": price, "checkout_hash": chash, **reveal})
+    entry = {"order": o["id"], "buyer": o["buyer"], "shop": norm_url(p["url"]), "item": cols["item"],
+             "amount": price, "checkout_hash": chash, **reveal}
+    if co.get("private") is True and o["round"] >= OPEN_ROUND:   # the shop's choice: the public entry names the shop only
+        seq, h = M.append("settle", {"order": o["id"], "shop": norm_url(p["url"])},
+                          sealed={"data": entry, "order": o["id"], "shop": p["name"], "buyer": o["buyer"]})
+    else:
+        seq, h = M.append("settle", entry)
     receipt = {"order": o["id"], "shop": norm_url(p["url"]), "amount": price, "checkout_hash": chash, "ledger": seq, **reveal,
                **({"value": extra["value"]} if econ else {})}     # the buyer's own: did it serve the order (not on the ledger)
     return JSONResponse({"settled": True, "checks": c, "ledger": seq, "hash": h,
@@ -1366,9 +1382,15 @@ def econ_sweep():
             M.wallet(shop["name"])
             M.db.execute("update wallets set balance=balance-? where shop=?", (s["price"], shop["name"]))
         M.db.commit()
-        M.append("broken", {"order": s["order_id"], "buyer": s["buyer"], "shop": s["shop_url"], "unit": s["unit"],
-                            "item": s["item"], "hours_after_sale": round((s["break_at"] - s["ts"]) / 3600, 2),
-                            "warranty_hours": s["warranty_hours"], "refunded": s["price"] if refund else 0})
+        entry = {"order": s["order_id"], "buyer": s["buyer"], "shop": s["shop_url"], "unit": s["unit"],
+                 "item": s["item"], "hours_after_sale": round((s["break_at"] - s["ts"]) / 3600, 2),
+                 "warranty_hours": s["warranty_hours"], "refunded": s["price"] if refund else 0}
+        was = M.db.execute("select shop from sealed where order_id=? and kind='settle'", (s["order_id"],)).fetchone()
+        if was:                                      # a sealed sale breaks in public, but what it was stays sealed
+            M.append("broken", {"order": s["order_id"], "shop": s["shop_url"], "hours_after_sale": entry["hours_after_sale"]},
+                     sealed={"data": entry, "order": s["order_id"], "shop": was["shop"], "buyer": s["buyer"]})
+        else:
+            M.append("broken", entry)
 
 
 async def econ_loop():
@@ -2011,6 +2033,24 @@ async def ledger(req: Request):
     return JSONResponse(await off_loop(ledger_rows, after))
 
 
+async def ledger_sealed(req: Request):
+    """What a sealed entry holds back, for the shop and the customer of that deal: ?seq=<n> or ?order=<id>."""
+    p = M.party(req)
+    if p is None:
+        return err(401, "join first: a sealed entry opens for the shop and the customer of that deal")
+    q = req.query_params
+    rows = M.db.execute("select s.*, l.data entry from sealed s join ledger l on l.seq=s.seq where "
+                        + ("s.seq=?" if q.get("seq", "").isdigit() else "s.order_id=?") + " order by s.seq",
+                        (int(q["seq"]) if q.get("seq", "").isdigit() else str(q.get("order", "")),)).fetchall()
+    if not rows:
+        return err(404, "no sealed entry there")
+    if not all(r["shop" if p["role"] == "shop" else "buyer"] == p["name"] for r in rows):
+        return err(403, "sealed: only the shop and the customer of that deal may read it")
+    return JSONResponse([{"seq": r["seq"], "kind": r["kind"], "data": json.loads(r["data"]), "salt": r["salt"],
+                          "sealed": json.loads(r["entry"])["sealed"],
+                          "check": "sealed = sha256(salt + JSON of data with sorted keys and no spaces), hex"} for r in rows])
+
+
 def ledger_rows(after):
     db = reader()
     if after < 0:                                    # after=-N: the last N entries
@@ -2538,6 +2578,7 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/api/reviews", review, methods=["POST"]),
         Route("/api/stats", api_stats),
         Route("/api/ledger", ledger),
+        Route("/api/ledger/sealed", ledger_sealed),
         Route("/api/trades", trades),
         Route("/api/admin/round", admin_round, methods=["POST"]),
         Route("/api/admin/label", admin_label, methods=["POST"]),
