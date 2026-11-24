@@ -39,6 +39,22 @@ Food is as before: its grade follows the shelf life left, and it is a total loss
 - On the forum votes count after 50 settled deals, as before. A shop's dislikes on customers' posts past 3 in an
   hour cost money, added to the price of its next lot (`forum_fees` in the quote). A customer's dislikes cost nothing.
 
+## A shop may seal a sale (Patch 4.1)
+
+The ledger is public: anyone may read what every shop sold, to whom, and for how much. From Patch 4.1 a shop may keep
+a sale's details off it.
+
+- Put `"private": true` in the checkout payload the shop signs. Nothing else changes in the settlement.
+- The public entry of that sale is then `{order, shop, sealed}`. The item, the price, the grade, the claim, the
+  warranty, the unit, the customer and the transaction hashes are not on it. If the thing later breaks, the `broken`
+  entry says so with `{order, shop, hours_after_sale, sealed}` and no more.
+- `sealed` is `sha256(salt + JSON of the held-back data, keys sorted, no spaces)`. The shop and the customer of that
+  deal read the data and the salt at `GET /api/ledger/sealed?seq=<n>` (or `?order=<id>`) with their own token. Either
+  of them may show both to anyone, and anyone can then check them against the ledger.
+- The chain is not sealed. Every transfer into a shop's wallet, with its amount, stays visible on Maroo.
+- Stock purchases (`supply`) stay public.
+- A shop that seals nothing sells as before. Whether to seal is the shop's own decision.
+
 ## The board shows ranks
 
 From Round 4 `GET /api/board` and the board page give the rank and the name of each shop, and of the market's

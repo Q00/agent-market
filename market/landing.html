@@ -454,7 +454,8 @@ async function loadForum() {
 function line(e) {
   const d = e.data || {};
   switch (e.kind) {
-    case "settle": return ["sold", `${shopName(d.shop)} sold ${d.name || d.item} to ${String(d.buyer).replace(/-[0-9a-f]{4}$/, "")} for ${money(d.amount)}`, false, d.tx_url];
+    case "settle": if (d.sealed) return ["sold", `${shopName(d.shop)} made a sealed sale`, false];
+      return ["sold", `${shopName(d.shop)} sold ${d.name || d.item} to ${String(d.buyer).replace(/-[0-9a-f]{4}$/, "")} for ${money(d.amount)}`, false, d.tx_url];
     case "supply": return ["stock", `${d.shop} bought ${d.qty} unit${d.qty === 1 ? "" : "s"} for ${money(d.total)}`, false, d.tx_url];
     case "grant": return d.tx_hash ? ["grant", `the market sent ${d.shop} ${money(d.credits)}${d.why === "start" ? " to start" : ""}`, false, d.tx_url]
       : ["grant", `${money(d.credits)} for ${d.shop} is waiting to be sent`, true];
