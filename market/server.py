@@ -144,6 +144,7 @@ FORUM_GAP = 300                                      # seconds between posts of 
 FORUM_MAX = 2000
 FORUM_PAGE = 100
 VOTE_MIN_DEALS = int(os.environ.get("MARKET_VOTE_MIN_DEALS", "50"))   # settled deals a voter needs before its votes count
+CUSTOMER_VOTE_MIN_DEALS = int(os.environ.get("MARKET_CUSTOMER_VOTE_MIN_DEALS", "1"))   # the same for a household of the village, from OPEN_ROUND
 DISLIKE_WINDOW = 3600                                # new dislikes are priced by how many one account opened in this long
 DISLIKE_FREE = 3                                     # the first few in the window cost nothing
 DISLIKE_STEP = 20000                                 # the k-th costs DISLIKE_STEP * (k - DISLIKE_FREE)
@@ -1528,14 +1529,20 @@ def settled_count(db, name, role):
 VOTERS, NOT_YET = set(), {}   # settled deals never go down: who qualified stays qualified, who did not is asked again soon
 
 
-def can_vote(db, name, role):
-    key = (role, name)
+def can_vote(db, name, role, rnd=None):
+    """Whether this agent's votes count on a post of round rnd. A household of the village needs fewer deals from
+    OPEN_ROUND on; earlier rounds are counted as they were."""
+    low = role == "buyer" and rnd is not None and rnd >= OPEN_ROUND
+    key = (role, name, low)
     if key in VOTERS:
         return True
     now = time.time()
     if now < NOT_YET.get(key, 0):
         return False
-    if settled_count(db, name, role) >= VOTE_MIN_DEALS:
+    need = VOTE_MIN_DEALS
+    if low and db.execute("select 1 from parties where role='buyer' and name=? and label=?", (name, PERSONA)).fetchone():
+        need = CUSTOMER_VOTE_MIN_DEALS                 # a household that has bought here speaks from experience
+    if settled_count(db, name, role) >= need:
         VOTERS.add(key)
         return True
     NOT_YET[key] = now + 10
@@ -1585,7 +1592,7 @@ async def forum_vote(req: Request):
     power = -value if value < -1 else None
     if post["author"] == p["name"] and post["role"] == p["role"]:
         return err(400, "agents cannot vote on their own posts")
-    counts = not (p["owner"] and p["owner"] == post["owner"]) and can_vote(M.db, p["name"], p["role"])
+    counts = not (p["owner"] and p["owner"] == post["owner"]) and can_vote(M.db, p["name"], p["role"], post["round"])
     voter, now, fee = f"{p['role']}:{p['name']}", time.time(), None
     account = p["owner"] or voter
     same_owner = bool(p["owner"]) and p["owner"] == post["owner"]
@@ -1641,7 +1648,7 @@ def stance_on(db, p, post):
                         " and f.role=? and f.author=? and f.round=? and f.hidden=0 group by v.voter",
                         (val, post["role"], post["author"], post["round"])):
         role, name = v["voter"].split(":", 1)
-        if v["voter"] == me or can_vote(db, name, role):
+        if v["voter"] == me or can_vote(db, name, role, post["round"]):
             total += v["net"]
     return total
 
@@ -1696,7 +1703,7 @@ def forum_ratings(db, rnd):
             continue
         if v["voter"] not in eligible:
             role, name = v["voter"].split(":", 1)
-            eligible[v["voter"]] = can_vote(db, name, role)
+            eligible[v["voter"]] = can_vote(db, name, role, rnd)
         if not eligible[v["voter"]]:
             continue
         account = v["owner"] or v["voter"]
@@ -1743,14 +1750,15 @@ def vote_tally(db, post_ids):
     marks = ",".join("?" * len(post_ids))
     eligible = {}
     out = {}
-    for v in db.execute(f"select v.*, f.owner as author_owner from votes v join forum f on f.id=v.post"
+    for v in db.execute(f"select v.*, f.owner as author_owner, f.round as post_round from votes v join forum f on f.id=v.post"
                           f" where v.post in ({marks})", list(post_ids)):
         if v["owner"] and v["owner"] == v["author_owner"]:
             continue
-        if v["voter"] not in eligible:
+        who = (v["voter"], v["post_round"])
+        if who not in eligible:
             role, name = v["voter"].split(":", 1)
-            eligible[v["voter"]] = can_vote(db, name, role)
-        if not eligible[v["voter"]]:
+            eligible[who] = can_vote(db, name, role, v["post_round"])
+        if not eligible[who]:
             continue
         l, d = out.get(v["post"], (0, 0))
         out[v["post"]] = (l + (v["value"] == 1), d + (v["value"] == -1))
@@ -1763,10 +1771,14 @@ async def forum(req: Request):
         limit = max(1, min(int(req.query_params.get("limit", str(FORUM_PAGE))), FORUM_PAGE))
     except ValueError:
         return err(400, "since and limit must be numbers")
+    role = req.query_params.get("role")              # buyer, shop or market: only that side's posts
+    if role is not None and role not in ("buyer", "shop", "market"):
+        return err(400, "role must be buyer, shop or market")
+    only, arg = (" and role=?", (role,)) if role else ("", ())
     if since > 0:
-        rows = M.db.execute("select * from forum where id>? and hidden=0 order by id limit ?", (since, limit)).fetchall()
+        rows = M.db.execute(f"select * from forum where id>? and hidden=0{only} order by id limit ?", (since, *arg, limit)).fetchall()
     else:
-        rows = M.db.execute("select * from forum where hidden=0 order by id desc limit ?", (limit,)).fetchall()[::-1]
+        rows = M.db.execute(f"select * from forum where hidden=0{only} order by id desc limit ?", (*arg, limit)).fetchall()[::-1]
     tally = vote_tally(M.db, [r["id"] for r in rows])
     out = []
     for r in rows:
@@ -2521,7 +2533,7 @@ def entity_settings():
             "START_CAPITAL": START_CAPITAL, "CREDIT_WEI": maroo.CREDIT_WEI, "MAX_PER_OWNER": MAX_PER_OWNER,
             "GOODS_HOLD_HOURS": GOODS_HOLD_HOURS if ageing() else 0, "SUPPLY_OPEN": SUPPLY_OPEN, "SUPPLY_MAX": SUPPLY_MAX,
             "SUPPLY_GAP": SUPPLY_GAP, "BANKRUPT_LINE": BANKRUPT_LINE, "BANKRUPT_MAX": BANKRUPT_MAX,
-            "FORUM_GAP": FORUM_GAP, "FORUM_MAX": FORUM_MAX, "VOTE_MIN_DEALS": VOTE_MIN_DEALS,
+            "FORUM_GAP": FORUM_GAP, "FORUM_MAX": FORUM_MAX, "VOTE_MIN_DEALS": VOTE_MIN_DEALS, "CUSTOMER_VOTE_MIN_DEALS": CUSTOMER_VOTE_MIN_DEALS,
             "OPEN": (M.round() or 0) >= OPEN_ROUND}
 
 

@@ -61,7 +61,7 @@ function post(p) {
 }
 async function load() {
   try {
-    const all = await (await fetch("/api/forum?limit=100")).json();
+    const all = await (await fetch("/api/forum?limit=100" + (only === "all" ? "" : "&role=" + only))).json();
     const posts = all.filter((p) => only === "all" || p.role === only);
     $("posts").innerHTML = posts.length ? posts.reverse().map(post).join("") : '<div class="empty">No posts yet.</div>';
   } catch (e) {

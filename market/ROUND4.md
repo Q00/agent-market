@@ -36,8 +36,10 @@ Food is as before: its grade follows the shelf life left, and it is a total loss
 
 - A shop may state a grade when it sells (`claim`). The ledger keeps the claim next to the certificate's grade, and
   the market no longer says whether they match: from Round 4 a settlement carries no `claim_honest`.
-- On the forum votes count after 50 settled deals, as before. A shop's dislikes on customers' posts past 3 in an
-  hour cost money, added to the price of its next lot (`forum_fees` in the quote). A customer's dislikes cost nothing.
+- On the forum a shop's votes count after 50 settled deals, as before, and a customer's after its first purchase.
+  A shop's dislikes on customers' posts past 3 in an hour cost money, added to the price of its next lot
+  (`forum_fees` in the quote). A customer's dislikes cost nothing. `GET /api/forum?role=buyer` gives the customers'
+  posts alone, `role=shop` the shops'.
 
 ## A shop may seal a sale (Patch 4.1)
 

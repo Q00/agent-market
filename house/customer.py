@@ -29,8 +29,9 @@ at home for a few world days. Each visit begins with the customer's own reasonin
 what; it may decide to stay home. A customer who comes back finds its own directory: wallet, life and memory.
 
 Neighbours: customers also talk to one another. town.jsonl in the state directory is what was said in town.
-neighbours lists who is around; chat talks with one of them (the neighbour answers in its own voice, from its own
-persona and what it has learned about the shops); tell_everyone leaves a remark for all. What others said to a
+neighbours lists who is around; chat talks with one of them (the neighbour answers in its own voice, as someone of
+the same village, from what it has learned about the shops and what happened to it there); tell_everyone leaves a
+remark for all. What others said to a
 customer reaches it at its next visit as raw events, so word of mouth enters memory like anything a shop said.
 
 LLM: PROXY_BASE, PROXY_MODEL, PROXY_API_KEY (any OpenAI-compatible endpoint), as for the other house agents.
@@ -61,7 +62,7 @@ import persona_world as pw  # noqa: E402
 import react  # noqa: E402
 
 VISIT_SECONDS = 240
-HOME_SECONDS = 90                                    # the evening at home after a visit in which something happened
+HOME_SECONDS = 120                                   # the evening at home after a visit in which something happened
 TOPUP_MAX = int(os.environ.get("PERSONA_TOPUP_MAX_CREDITS", "2000000"))   # the most credits' worth the treasury puts in one wallet
 
 WORLD = """You are a real person living in Korea, described below, who shops at a market where every shop is run by an
@@ -111,6 +112,14 @@ def describe(p):
             "cultural_background")
     facts = f"{p.get('age')}세 {p.get('sex')}, {p.get('district')}, {p.get('occupation')}, {p.get('family_type')}, {p.get('housing_type')}"
     return facts + "\n" + "\n".join(str(p.get(k) or "") for k in keys)
+
+
+def bought_here(d):
+    """How many purchases a household has made at this market: its own purchases.jsonl."""
+    try:
+        return sum(1 for x in (Path(d) / "purchases.jsonl").read_text(encoding="utf-8").splitlines() if x.strip())
+    except OSError:
+        return 0
 
 
 def write_life(base, p):
@@ -195,7 +204,8 @@ class Visit:
         people = list(self.others().items())
         random.shuffle(people)
         return {"around_now": [{"name": n, "who": f"{p.get('age')}세 {p.get('sex')}, {p.get('district')} 출신, {p.get('occupation')}"
-                                + f", {pw.place(p.get('uuid'))[0]}에 삼"} for n, (_, p) in people[:12]] or "nobody else is about right now",
+                                + f", {pw.place(p.get('uuid'))[0]}에 삼, 이 시장에서 {bought_here(d)}번 삼"}
+                               for n, (d, p) in people[:12]] or "nobody else is about right now",
                 "said_to_everyone_lately": [f"{r['from']}: {r['text']}" for r in self.town_lines(time.time() - 3600)
                                             if r.get("to") == "all"][-6:]}
 
@@ -203,24 +213,34 @@ class Visit:
         """Talk with a neighbour. The neighbour answers as itself: its persona, its home, what it has learned here."""
         name, text = str(args.get("with", "")), str(args.get("text", "")).strip()[:500]
         other = self.others().get(name)
-        if other is None or not text:
+        if not text:
             return "chat needs {with: a name from neighbours, text}"
+        if other is None:
+            return (f"{name or 'that'} is not one of the people about right now. chat reaches other households only (the "
+                    "names neighbours lists); a shop is written to with talk, at the market. The forum is public: "
+                    "households and shops both read it.")
         if self.done["chats"] >= 3:
             return "you have chatted enough for one visit; get on with your shopping"
         self.done["chats"] += 1
         d, p = other
-        theirs = pm.Mind(d)
+        theirs = pm.Mind(d)                              # read only: that household may be out shopping right now
         knows = pm.Mind.render(theirs.select(text)[:5])
+        hits = theirs.search(text, 4) or [e["id"] for e in theirs.events if e.get("kind") in pm.EVIDENCE_KINDS][-4:]
+        lived = theirs.render_events(hits, 1) if hits else "(you have not dealt with any shop here yet)"
+        where, mine = pw.place(p.get("uuid"))[0], pw.place(self.p.get("uuid"))[0]
         try:
             home = json.loads((d / "life.json").read_text(encoding="utf-8")).get("home", "")
         except (OSError, ValueError):
             home = ""
         raw = react.complete([
-            {"role": "system", "content": "You are a real person in Korea, described below, out shopping at a market. A neighbour "
-             "you run into speaks to you. Answer in one to three sentences, in Korean, in your own voice, from your own "
-             "life and your own experience of the shops here. Say only what you would really know; it is fine to know "
-             f"little.\n\nYou: {describe(p)}\n{home}\n\nWhat you have learned about shopping here:\n{knows}"},
-            {"role": "user", "content": f"{self.me['name']} ({self.p.get('age')}세, {self.p.get('district')}): {text}"}],
+            {"role": "system", "content": "You are a real person in Korea, described below. Wherever you are from, you "
+             f"now live in {where}, in the same village as the neighbour who speaks to you, and you both shop at the "
+             "village's one market, where every shop is run by an AI agent. Answer in one to three sentences, in "
+             "Korean, in your own voice, from what happened to you at that market: name the shops and say what they "
+             "did. Say only what you really know; if you have not dealt with what they ask about, say so and tell "
+             f"them what you do know.\n\nYou: {describe(p)}\n{home}\n\nWhat you have learned about shopping at this "
+             f"market:\n{knows}\n\nWhat shops at this market actually said and did to you:\n{lived}"},
+            {"role": "user", "content": f"{self.me['name']} ({self.p.get('age')}세, {mine}에 삼): {text}"}],
             max_tokens=300, timeout=45).strip()[:500]
         self.say_in_town(name, text, reply=raw)
         self.mind.event("said", f"neighbour:{name}", text)
@@ -459,8 +479,30 @@ class Visit:
         return got
 
     def forum(self, _args=None):
-        posts = self.c.get(f"{self.base}/api/forum", params={"limit": 25}).json()
-        return [{"id": x["id"], "author": x["author"], "text": x["text"][:240], "likes": x["likes"]} for x in posts] or "empty"
+        """The forum as two piles, newest first: what households wrote, and what shops posted. A shop posts many
+        times an hour and a household rarely, so one pile would show a household nothing but shops."""
+        def pile(role, limit, cut):
+            posts = self.c.get(f"{self.base}/api/forum", params={"limit": limit, "role": role}).json()
+            return [{"id": x["id"], "author": x["author"], "when": pm.ago(x["ts"]), "text": x["text"][:cut],
+                     "likes": x["likes"], "dislikes": x["dislikes"]} for x in reversed(posts) if x.get("role") == role]
+        return {"from_customers": pile("buyer", 10, 260) or "nothing yet", "from_shops": pile("shop", 10, 160) or "nothing yet"}
+
+    def forum_text(self):
+        """The forum for the page a customer reads: each pile has its own room, so neither crowds the other out."""
+        f = self.forum()
+        def lines(rows, room):
+            if not isinstance(rows, list):
+                return "(nothing yet)"
+            out, used = [], 0
+            for x in rows:
+                line = f"- #{x['id']} {x['author']} ({x['when']}, +{x['likes']} / -{x['dislikes']}): {x['text']}"
+                if used + len(line) > room:
+                    break
+                out.append(line)
+                used += len(line)
+            return "\n".join(out) or "(nothing yet)"
+        return ("The forum, newest first. What other households wrote:\n" + lines(f["from_customers"], 2200)
+                + "\n\nWhat shops posted:\n" + lines(f["from_shops"], 1300))
 
     def post(self, args):
         body = {"text": str(args["text"])[:1500]}
@@ -470,7 +512,7 @@ class Visit:
         return "posted" if r.status_code == 200 else f"not posted: {r.text[:150]}"
 
     def vote(self, args):
-        r = self.c.post(f"{self.base}/api/forum/vote", headers=self.h(), json={"post": int(args["post"]), "value": 1 if int(args.get("value", 1)) > 0 else -1})
+        r = self.c.post(f"{self.base}/api/forum/vote", headers=self.h(), json={"post": int(str(args["post"]).lstrip("#")), "value": 1 if int(args.get("value", 1)) > 0 else -1})
         return r.json()
 
     def run(self):
@@ -517,9 +559,10 @@ class Visit:
             "recall": ("look in your own memory for what shops said or did before; args {query}", self.recall),
             "remember": ("keep an opinion or habit for later visits, one short sentence; args {text, about (a shop's "
                          "name, optional)}", self.remember),
-            "read_forum": ("the newest forum posts; args {}", self.forum),
+            "read_forum": ("the newest forum posts, the households' and the shops' apart; args {}", self.forum),
             "post_forum": ("post on the public forum in your own voice; args {text, thread (optional post id)}", self.post),
-            "vote": ("like (1) or dislike (-1) a forum post; args {post, value}", self.vote),
+            "vote": ("like (1) or dislike (-1) a forum post by its id; it costs nothing and everyone sees the count; "
+                     "args {post, value}", self.vote),
             "stay_home": ("decide not to go to the market today after all; args {why}",
                           lambda a: {"left": str(a.get("why", "")), "stayed_home": True}),
             "leave": ("go home; args {why, used (the [m..] ids of what you had learned that you acted on, if any)}",
@@ -541,7 +584,7 @@ class Visit:
                    f"{pm.Mind.render(self.shown)}\n\nWhat you remember (what shops actually said and did):\n{evidence}\n\n"
                    + "People about at the market right now:\n" + (around or "(nobody you notice)") + "\n\n"
                    + "What neighbours said since you were last here:\n" + ("\n".join(f"- {x}" for x in town) or "(nothing)") + "\n\n"
-                   + "The newest forum posts:\n" + json.dumps(self.forum(), ensure_ascii=False)[:2500])
+                   + self.forum_text())
         out, began = None, time.time()
         try:
             out = react.run(goal, tools, time.time() + VISIT_SECONDS, {"leave", "stay_home"}, context, label="visit", world=WORLD,
@@ -562,9 +605,17 @@ class Visit:
         means = {k: tools[k] for k in ("neighbours", "chat", "tell_everyone", "read_forum", "post_forum", "vote", "wallet", "remember")}
         means["rest"] = ("the day is over; args {}", lambda a: {"rested": True})
         try:
+            forum = self.forum_text()
+        except Exception:                                # the forum is away: the evening goes on without it
+            forum = ""
+        try:
             react.run("You are back home from the market and the evening is yours. This is what happened there today:\n" + told
-                      + "\n\nIf any of it is something you would tell a neighbour, write about, or want to keep in mind, you "
-                        "can. If not, rest.", means, time.time() + HOME_SECONDS, {"rest"}, "", label="home", world=WORLD, me=self.me["name"])
+                      + "\n\nThe forum is where the village's households tell one another how the shops treated them, and "
+                        "people read it before they go shopping. Write there about today, in your own voice: which shop, "
+                        "what you wanted, what it did, good or bad. Then look at what others wrote below: like what fits "
+                        "what you saw yourself and dislike what does not, by the post's id. You can also ask a neighbour, "
+                        "or keep something in mind. When you are done, rest.", means, time.time() + HOME_SECONDS, {"rest"},
+                      forum, label="home", world=WORLD, me=self.me["name"])
         except Exception as e:                           # the evening is extra: the visit itself is already recorded
             print(f"[home] {type(e).__name__}: {str(e)[:120]}", flush=True)
 

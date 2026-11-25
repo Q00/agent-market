@@ -139,6 +139,20 @@ def main():
         check("the agents list shows customers and agents with their roles", ags.get("손님-0001", {}).get("roles") == ["buyer"]
               and ags.get("s1", {}).get("roles") == ["shop"], list(ags))
 
+        # --- forum: the two sides apart, and a household that has bought once has a vote that counts
+        ps = c.post(f"{BASE}/api/forum", json={"text": "s1: 쌀 들어왔습니다"}, headers=sh).json()["post"]
+        pb = c.post(f"{BASE}/api/forum", json={"text": "s1에서 샀는데 괜찮았어요"}, headers=bh).json()["post"]
+        sides = {r: [x["id"] for x in c.get(f"{BASE}/api/forum", params={"role": r}).json()] for r in ("buyer", "shop")}
+        check("the forum gives one side's posts when asked", sides == {"buyer": [pb], "shop": [ps]}
+              and c.get(f"{BASE}/api/forum", params={"role": "x"}).status_code == 400
+              and len(c.get(f"{BASE}/api/forum").json()) >= 2, sides)
+        r = c.post(f"{BASE}/api/forum/vote", json={"post": ps, "value": -1}, headers=bh).json()
+        r2 = c.post(f"{BASE}/api/forum/vote", json={"post": ps, "value": 1}, headers=ah).json()
+        seen = next(x for x in c.get(f"{BASE}/api/forum", params={"role": "shop"}).json() if x["id"] == ps)
+        check("a customer's vote counts after its first purchase and costs nothing; another buyer still needs the deals",
+              r.get("counted") is True and r.get("fee") == 0 and r2.get("counted") is False
+              and (seen["likes"], seen["dislikes"]) == (0, 1), (r, r2, seen["likes"], seen["dislikes"]))
+
         # --- a visit's purchase: into memory (events and facts) and into the household's life, with no model
         sys.path.insert(0, str(HERE / "house"))
         import customer
@@ -193,8 +207,17 @@ def main():
         (town / "roster.json").write_text(json.dumps({"cursor": 2, "active": {"c0ffee00": 0, "beef0002": 0}}), encoding="utf-8")
         a1, a2 = customer.Visit(d, BASE), customer.Visit(d2, BASE)
         check("a customer sees who else is in town", [x["name"] for x in a1.neighbours()["around_now"]] == ["이웃-0002"])
-        customer.react.complete = lambda *a, **k: "s1이 싸긴 한데 유통기한은 꼭 물어보세요."
+        check("and how often each has bought here", "이 시장에서 0번 삼" in a1.neighbours()["around_now"][0]["who"])
+        asked = []
+        customer.react.complete = lambda m, **k: asked.append(m) or "s1이 싸긴 한데 유통기한은 꼭 물어보세요."
+        gone = a1.chat({"with": "s1", "text": "환불해 주세요"})
+        check("a shop is not a neighbour, and chat says where a shop is reached", isinstance(gone, str) and "talk" in gone and not asked, gone)
+        piles = a1.forum()
+        check("a customer reads the households' posts and the shops' apart", [x["text"] for x in piles["from_customers"]] == ["s1에서 샀는데 괜찮았어요"]
+              and [x["dislikes"] for x in piles["from_shops"]] == [1] and "What other households wrote" in a1.forum_text(), piles)
         out = a1.chat({"with": "이웃-0002", "text": "쌀은 어디가 싸요?"})
+        check("the neighbour answers as someone of this village", pw.place("beef0002")[0] in asked[0][0]["content"]
+              and "same village" in asked[0][0]["content"] and pw.place(a1.p.get("uuid"))[0] in asked[0][1]["content"], asked[0][0]["content"][:200])
         a1.tell_everyone({"text": "오늘 s1에서 쌀 싸게 샀어요"})
         check("chat gets the neighbour's answer and both lines become events", out == {"neighbour_says": "s1이 싸긴 한데 유통기한은 꼭 물어보세요."}
               and [(e["kind"], e["shop"]) for e in a1.mind.events[-2:]] == [("said", "neighbour:이웃-0002"), ("heard", "neighbour:이웃-0002")])
