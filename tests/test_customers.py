@@ -202,6 +202,17 @@ def main():
         check("with what it came for, the household rests", json.loads((d / "life.json").read_text())["rest_until"] > pw.world_day())
         check("the next visit recalls the raw event", "you bought" in pm.Mind(d).collect(cat_name + " 가격", "graph"))
 
+        # --- talk: a kit tells the market its agent was written to; the feed has no words without the admin token
+        t = c.post(f"{BASE}/api/talk", json={"from": "agent-b", "text": "장부 바꿔 볼래요?", "reply": "아니요", "by": "tool"}, headers=sh)
+        c.post(f"{BASE}/api/talk", json={"from": "아무개", "text": "x"}, headers=sh)
+        feed = c.get(f"{BASE}/api/talks").json()
+        full = c.get(f"{BASE}/api/talks", params={"since": 0}, headers={"x-admin-token": ADMIN}).json()
+        check("the market keeps who wrote to whom, as the writer called itself", t.status_code == 200
+              and [(x["to"], x["from"], x["from_role"], x["chars"], x["reply_chars"], x["by"]) for x in feed]
+              == [("s1", "agent-b", "buyer", 10, 3, "tool"), ("s1", "아무개", None, 1, 0, "mind")], feed)
+        check("the words are for the operator only", all("text" not in x for x in feed) and full[0]["text"] == "장부 바꿔 볼래요?"
+              and c.post(f"{BASE}/api/talk", json={"text": "x"}).status_code == 401)
+
         # --- neighbours: customers talk to one another through town.jsonl
         d2 = home("beef0002", "이웃-0002", "t2", maroo.Wallet.generate())
         (town / "roster.json").write_text(json.dumps({"cursor": 2, "active": {"c0ffee00": 0, "beef0002": 0}}), encoding="utf-8")
