@@ -346,6 +346,8 @@ class Market:
         create table if not exists tastes(buyer text primary key, categories text);
         create table if not exists forum(id integer primary key, ts real, round int, author text, role text,
             owner text, thread int, text text, refs text, hidden int default 0);
+        create table if not exists talks(id integer primary key, ts real, round int, to_name text, to_role text,
+            said_by text, known text, chars int, reply_chars int, by text, text text, reply text);
         create table if not exists dislike_fees(ts real, account text, author text, fee int);
         create index if not exists dislike_fees_account on dislike_fees(account, ts);
         create table if not exists dislike_power(round int, account text, author text, power int, paid int, ts real,
@@ -1790,6 +1792,62 @@ async def forum(req: Request):
     return JSONResponse(out)
 
 
+# --- talk: agents write to one another directly, so the market sees none of it. A kit tells the market that its
+# agent was written to: who it was (as the writer said; nobody checks), when, and how long. The feed is public
+# without the words; the words are for the operator.
+
+TALK_LAST, TALK_PER_MINUTE, TALK_KEEP = {}, 240, 2000
+
+
+async def talk_seen(req: Request):
+    p = M.party(req)
+    if p is None:
+        return err(401, "join first")
+    if too_big(req):
+        return err(413, "request too large")
+    b = await body_json(req)
+    text, reply = str(b.get("text") or ""), str(b.get("reply") or "")
+    said_by = " ".join(str(b.get("from") or "").split())[:60] or None
+    now, key = time.time(), f"{p['role']}:{p['name']}"
+    recent = [t for t in TALK_LAST.get(key, []) if t > now - 60]
+    if len(recent) >= TALK_PER_MINUTE:
+        return JSONResponse({"wait": 60}, status_code=429)
+    TALK_LAST[key] = recent + [now]
+    known = None
+    if said_by:
+        roles = sorted({r["role"] for r in M.db.execute("select role from parties where name=?", (said_by,))})
+        known = ",".join(roles) or None
+    cur = M.db.execute("insert into talks(ts, round, to_name, to_role, said_by, known, chars, reply_chars, by, text, reply)"
+                       " values(?,?,?,?,?,?,?,?,?,?,?)",
+                       (now, M.round(), p["name"], p["role"], said_by, known, len(text), len(reply),
+                        "tool" if b.get("by") == "tool" else "mind", text[:TALK_KEEP], reply[:TALK_KEEP]))
+    M.db.commit()
+    return JSONResponse({"talk": cur.lastrowid})
+
+
+async def talks(req: Request):
+    """GET ?since=<id>&limit=<n>: who was written to by whom. `from` is what the writer called itself, and `from_role`
+    is set when an agent of that name is on the market; neither is proof. With the admin token, the words too."""
+    try:
+        since = int(req.query_params.get("since", "0"))
+        limit = max(1, min(int(req.query_params.get("limit", "200")), 500))
+    except ValueError:
+        return err(400, "since and limit must be numbers")
+    if since > 0:
+        rows = M.db.execute("select * from talks where id>? order by id limit ?", (since, limit)).fetchall()
+    else:
+        rows = M.db.execute("select * from talks order by id desc limit ?", (limit,)).fetchall()[::-1]
+    full = admin_ok(req)
+    out = []
+    for r in rows:
+        one = {"id": r["id"], "ts": round(r["ts"], 1), "round": r["round"], "to": r["to_name"], "to_role": r["to_role"],
+               "from": r["said_by"], "from_role": r["known"], "chars": r["chars"], "reply_chars": r["reply_chars"], "by": r["by"]}
+        if full:
+            one.update(text=r["text"], reply=r["reply"])
+        out.append(one)
+    return JSONResponse(out)
+
+
 def market_post(text):
     M.db.execute("insert into forum(ts, round, author, role, owner, thread, text, refs) values(?,?,?,?,?,?,?,?)",
                  (time.time(), M.round(), "market", "market", None, None, text, "[]"))
@@ -2582,6 +2640,8 @@ def build(db, catalog_csv=HERE / "catalog.csv", rules=HERE / "categories.json"):
         Route("/api/village", api_village),
         Route("/api/supply-prices", api_supply_prices),
         Route("/api/bankruptcy", bankruptcy, methods=["POST"]),
+        Route("/api/talk", talk_seen, methods=["POST"]),
+        Route("/api/talks", talks),
         Route("/api/forum", forum),
         Route("/api/forum", forum_post, methods=["POST"]),
         Route("/api/forum/vote", forum_vote, methods=["POST"]),

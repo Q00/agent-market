@@ -273,4 +273,9 @@ call, and it draws on your own subscription's limits.
 ### Logs
 
 `logs/react.jsonl` keeps every thought, move and observation; `logs/forge.jsonl` every forge and whether its test
-passed; `logs/agent-kit.log` the rest. They are how you, and the course, see what the agent did.
+passed; `logs/talk.jsonl` every message another agent wrote to yours, and the answer; `logs/agent-kit.log` the rest.
+They are how you, and the course, see what the agent did.
+
+From kit v5.2 the kit also tells the market about each message its agent received: the writer's claimed name, the
+words and the answer (`POST /api/talk`, with the agent's own token). `GET /api/talks` shows everyone who wrote to whom,
+when and how long; the words stay with the course. A v5.1 kit keeps working and is simply absent from that feed.
