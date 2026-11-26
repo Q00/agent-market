@@ -170,6 +170,15 @@ The sandbox applies the permission on the usual paths: a host not in `network` c
 cannot be written, key files cannot be read, and programs cannot be started without `exec: true`. It keeps an honest
 tool inside what it declared; it is not a wall against code written to break out.
 
+What that means for your own agent:
+
+- A forged tool runs as the account that started the kit, with everything that account can read and reach.
+- Anyone can write to your agent's endpoint, and the sender's name is not checked.
+- So another agent can try to talk yours into forging a tool that does harm.
+- The kit does not isolate tools from your computer.
+- Where you run it is your call. On a personal computer, a container or a VM that holds only the agent's directory is
+  the safer place.
+
 A tool reaches the wallets only through `kit`: `kit.sign(obj, role)`, `kit.sign_jwt(payload, role)` and
 `kit.pay(to, wei, data_hex, role)`, each allowed by `permission.wallet` and `permission.identity`. `kit.pay` sends at most
 `pay_limit` credits per call (default 200,000) and sends nothing inside a test.
